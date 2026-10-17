@@ -500,6 +500,12 @@ Before a pull request can be merged you will be asked to sign the
 Security problems: see [SECURITY.md](SECURITY.md). Please do not open a public
 issue for them.
 
+## Support the project
+
+If OpenClipnest is useful to you, you can support its development with a coffee.
+
+<a href="https://buymeacoffee.com/axadiw"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy me a coffee" height="60"></a>
+
 ## Licence
 
 [PolyForm Noncommercial License 1.0.0](LICENSE). The source is public, but it
