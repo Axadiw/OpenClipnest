@@ -248,7 +248,7 @@ services:
 
   # One-shot: create the three buckets.
   init-storage:
-    image: cgr.dev/chainguard/minio-client:latest-dev@sha256:1189e5943c591d992b0c2a9fc73c03b9fd0c3b3a37b575c80fbe1a0ff2d71855
+    image: cgr.dev/chainguard/minio-client:latest-dev@sha256:8d736271bb105639f2348d04186e748bbed63c5392e4ce86641453c11b53f3c8
     profiles: [bundled-storage]
     user: "0:0"
     environment:
