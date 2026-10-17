@@ -1,0 +1,44 @@
+{
+  "name": "clipnest-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "test": "STORY_REPORT_OUTPUT=../test-results/vitest-frontend.json vitest run"
+  },
+  "dependencies": {
+    "@sentry/react": "^10.57.0",
+    "@simplewebauthn/browser": "^13.3.0",
+    "@tiptap/extension-link": "^3.30.5",
+    "@tiptap/react": "^3.30.5",
+    "@tiptap/starter-kit": "^3.30.5",
+    "date-fns": "^4.4.0",
+    "dompurify": "^3.4.8",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-markdown": "^10.1.0",
+    "react-router-dom": "^7.18.2",
+    "react-zoom-pan-pinch": "^4.0.3",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.59.1",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^6.0.2",
+    "eslint": "^10.4.1",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "happy-dom": "^20.10.2",
+    "jsdom": "^29.1.1",
+    "typescript": "^6.0.2",
+    "typescript-eslint": "^8.61.0",
+    "vite": "^8.0.16",
+    "vitest": "^4.1.7"
+  }
+}

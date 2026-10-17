@@ -1,0 +1,1 @@
+ALTER TABLE "push_devices" ADD COLUMN "supports_loc_keys" boolean DEFAULT false NOT NULL;

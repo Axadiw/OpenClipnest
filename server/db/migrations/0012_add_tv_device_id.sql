@@ -1,0 +1,1 @@
+ALTER TABLE "tv_device_codes" ADD COLUMN "device_id" text;

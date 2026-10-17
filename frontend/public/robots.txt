@@ -1,0 +1,4 @@
+# A self-hosted Clipnest is a private recordings archive — nothing on it is
+# meant for search engines. (The Clipnest Cloud build ships its own policy.)
+User-agent: *
+Disallow: /

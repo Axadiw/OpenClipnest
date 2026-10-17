@@ -1,0 +1,64 @@
+[package]
+name = "clipnest-ftps"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libunftp = "0.23"
+unftp-core = "0.1"
+tokio = { version = "1", features = ["full"] }
+# default-features disabled to drop the SDK's legacy default HTTPS connector
+# (rustls 0.21 / webpki 0.101 — RUSTSEC); we pin our own rustls-aws-lc client.
+aws-sdk-s3 = { version = "1", default-features = false, features = ["sigv4a", "http-1x", "rt-tokio"] }
+aws-config = { version = "1", default-features = false, features = ["rt-tokio", "credentials-process", "sso"] }
+aws-credential-types = "1"
+aws-smithy-types = "1"
+aws-smithy-http-client = { version = "1", features = ["default-client", "rustls-aws-lc"] }
+reqwest = { version = "0.13", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hkdf = "0.13"
+sha2 = "0.11"
+md-5 = "0.11"
+base64 = "0.22"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+async-trait = "0.1"
+bytes = "1"
+moka = { version = "0.12", features = ["future"] }
+dashmap = "6"
+redis = { version = "1.2", features = ["tokio-comp", "connection-manager", "streams"] }
+tokio-util = { version = "0.7", features = ["io"] }
+uuid = { version = "1", features = ["v4"] }
+# default-features off drops the protobuf exposition format — Prometheus scrapes
+# the text format and the protobuf path pulls in a build-time codegen dep.
+prometheus = { version = "0.14", default-features = false }
+
+[dev-dependencies]
+wiremock = "0.6"
+tokio-test = "0.4"
+
+[profile.release]
+lto = "thin"
+strip = true
+
+[profile.profiling]
+inherits = "release"
+strip = false
+debug = 1
+
+# Fork of libunftp 0.23.0 with two local patches:
+#   1. `datachan.rs` data-channel TLS accept panic (unwrap on UnexpectedEof)
+#      replaced by a graceful warn-and-drop — upstream bug tracked in
+#      bolcom/libunftp#375.
+#   2. Per-channel TLS config split so the data channel runs with
+#      `NoServerSessionStorage`, a no-op ticketer and `send_tls13_tickets = 0`.
+#      This suppresses the two TLS 1.3 NewSessionTicket records rustls
+#      otherwise emits immediately after handshake — those races against
+#      the client's post-STOR close_notify+FIN and surfaces as spurious
+#      ECONNRESET + 451 "local error" on ~60 KiB+ uploads. Resumption on
+#      PASV/PORT gives no benefit anyway, each data session is one-shot.
+# Commit is pinned by rev so `cargo update` won't silently move us.
+[patch.crates-io]
+libunftp = { git = "https://github.com/Axadiw/libunftp", rev = "92cc8c733fcc8e92ab1f48ecb380c24db8ecccff" }
+unftp-core = { git = "https://github.com/Axadiw/libunftp", rev = "92cc8c733fcc8e92ab1f48ecb380c24db8ecccff" }

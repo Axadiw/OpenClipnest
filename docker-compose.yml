@@ -1,0 +1,372 @@
+# OpenClipnest — the whole install in one file.
+#
+#   1. cp .env.example .env    and fill it in (README.md walks through it)
+#   2. docker compose up -d --build
+#   3. Open the address you set as PUBLIC_URL and sign in.
+#
+# Your settings live in .env next to this file; this file only reads them, so
+# do not edit it for your settings (`git pull` would then conflict). Additions
+# of your own, such as a TLS proxy of your own (see the bottom), go in
+# docker-compose.override.yml, which Compose reads automatically. Built-in
+# HTTPS needs no addition: it is switched on in .env.
+#
+# The account is created on the first start from ACCOUNT_EMAIL /
+# ACCOUNT_PASSWORD. There is exactly one account; nobody can register.
+
+# The release this tree is: shown in the web app's menu and reported by
+# /api/v0/config. The commit that is tagged as a release sets it.
+x-version: &version "v1.0.0"
+
+x-server: &server
+  build:
+    context: .
+    dockerfile: docker/server.Dockerfile
+    args:
+      VERSION: *version
+  image: openclipnest/server:local
+  restart: unless-stopped
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  networks: [clipnest]
+  volumes:
+    - certs:/certs:ro
+
+x-server-env: &server_env
+  DATABASE_URL: clipnest-db:5432/clipnest
+  POSTGRES_USER: clipnest
+  POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD is not set - copy .env.example to .env and fill it in}
+  REDIS_URL: redis://redis:6379
+  PUBLIC_APP_URL: ${PUBLIC_URL:?PUBLIC_URL is not set - copy .env.example to .env and fill it in}
+  PUBLIC_FTPS_HOST: ${FTP_HOST:?FTP_HOST is not set - copy .env.example to .env and fill it in}
+  PUBLIC_FTPS_PORT: ${FTP_PORT:-21}
+  JWT_SECRET: ${TOKEN_SECRET:?TOKEN_SECRET is not set - copy .env.example to .env and fill it in}
+  CLIPNEST_ENCRYPTION_MASTER_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is not set - copy .env.example to .env and fill it in}
+  CLIPNEST_INTERNAL_API_KEY: ${INTERNAL_API_KEY:?INTERNAL_API_KEY is not set - copy .env.example to .env and fill it in}
+  CLIPNEST_S3_ENDPOINT: ${STORAGE_ENDPOINT:-https://minio:9000}
+  CLIPNEST_S3_ACCESS_KEY: ${STORAGE_USER:-clipnest}
+  CLIPNEST_S3_SECRET_KEY: ${STORAGE_PASSWORD:?STORAGE_PASSWORD is not set - copy .env.example to .env and fill it in}
+  CLIPNEST_S3_RECORDINGS_BUCKET: ${STORAGE_RECORDINGS_BUCKET:-recordings}
+  CLIPNEST_S3_THUMBNAILS_BUCKET: ${STORAGE_THUMBNAILS_BUCKET:-thumbnails}
+  CLIPNEST_S3_SIDECARS_BUCKET: ${STORAGE_SIDECARS_BUCKET:-sidecars}
+  CLIPNEST_PUSH_RELAY_URL: ${PUSH_RELAY_URL:-}
+  # The frame-accurate stream the web app and the apps ask for (?fmt=clean).
+  CLIPNEST_CLEAN_FRAME_ENABLED: "true"
+  # Certificates trusted for the object storage, on top of the public ones:
+  # by default the internal CA that signed the bundled storage's certificate.
+  NODE_EXTRA_CA_CERTS: ${STORAGE_CA_BUNDLE:-/certs/ca.crt}
+
+services:
+  # Web app (static files) and the single public HTTP entry point: it proxies
+  # /api and /mcp to the services below.
+  clipnest-frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+      args:
+        VERSION: *version
+    image: openclipnest/frontend:local
+    restart: unless-stopped
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    depends_on: [clipnest-api, clipnest-mcp]
+    networks: [clipnest]
+
+  clipnest-api:
+    <<: *server
+    command: ["node", "dist/index.js"]
+    environment:
+      <<: *server_env
+      # The API applies database migrations and creates the account on start.
+      RUN_MIGRATE_AT_STARTUP: "true"
+      CLIPNEST_BOOTSTRAP_EMAIL: ${ACCOUNT_EMAIL:?ACCOUNT_EMAIL is not set - copy .env.example to .env and fill it in}
+      CLIPNEST_BOOTSTRAP_PASSWORD: ${ACCOUNT_PASSWORD:?ACCOUNT_PASSWORD is not set - copy .env.example to .env and fill it in}
+      CLIPNEST_DISK_LIMIT: ${DISK_LIMIT:-}
+    labels:
+      # Which object storage to use is chosen in .env through COMPOSE_PROFILES.
+      # Refuse to start when that line is missing, instead of starting with no
+      # storage at all.
+      openclipnest.storage: "${COMPOSE_PROFILES?COMPOSE_PROFILES is not set - add COMPOSE_PROFILES=bundled-storage to .env, or COMPOSE_PROFILES= (empty) with your own object storage}"
+    depends_on:
+      clipnest-db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      init-certs: { condition: service_completed_successfully }
+      # Only with the bundled storage; ignored with your own.
+      init-storage: { condition: service_completed_successfully, required: false }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/healthz"]
+      start_period: 20s
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Decodes thumbnails and prepares recordings for instant seeking.
+  clipnest-thumbnail-worker:
+    <<: *server
+    command: ["node", "dist/thumbnail-worker-entry.js"]
+    environment:
+      <<: *server_env
+    depends_on:
+      clipnest-api: { condition: service_healthy }
+
+  # Periodic maintenance: retries stuck processing, applies retention and
+  # "delete oldest when full", reclaims orphaned files.
+  clipnest-scheduler:
+    <<: *server
+    command: ["node", "dist/scheduler-entry.js"]
+    environment:
+      <<: *server_env
+    depends_on:
+      clipnest-api: { condition: service_healthy }
+
+  # Sends push notifications through the relay. Idle unless a relay is set.
+  clipnest-push-worker:
+    <<: *server
+    command: ["node", "dist/push-worker-entry.js"]
+    environment:
+      <<: *server_env
+    depends_on:
+      clipnest-api: { condition: service_healthy }
+
+  # MCP endpoint: lets an LLM client browse your recordings after you approve it.
+  clipnest-mcp:
+    <<: *server
+    command: ["node", "dist-mcp/clipnest-mcp/index.js"]
+    environment:
+      <<: *server_env
+      MCP_PORT: "3100"
+    depends_on:
+      clipnest-api: { condition: service_healthy }
+
+  # FTP server the cameras upload to. Accepts FTPS (explicit TLS) and plain FTP.
+  clipnest-ftps:
+    build:
+      context: .
+      dockerfile: docker/ftps.Dockerfile
+    image: openclipnest/ftps:local
+    restart: unless-stopped
+    # Deliberately NOT given the database password or the token secret: this
+    # is the service exposed to cameras, and it only needs what is listed here.
+    environment:
+      # Port inside the container; the port cameras use is FTP_PORT in .env.
+      FTP_PORT: "21"
+      FTP_PASV_URL: ${FTP_HOST:?FTP_HOST is not set - copy .env.example to .env and fill it in}
+      FTP_PASV_MIN: "30000"
+      FTP_PASV_MAX: "30099"
+      TLS_CERT_PATH: /certs/fullchain.pem
+      TLS_KEY_PATH: /certs/privkey.pem
+      CLIPNEST_S3_ENDPOINT: ${STORAGE_ENDPOINT:-https://minio:9000}
+      # Unlike the services above, the FTP server trusts ONLY the certificates
+      # in this file for the object storage (any number of them, PEM format).
+      CLIPNEST_S3_CA_BUNDLE: ${STORAGE_CA_BUNDLE:-/certs/ca.crt}
+      CLIPNEST_S3_ACCESS_KEY: ${STORAGE_USER:-clipnest}
+      CLIPNEST_S3_SECRET_KEY: ${STORAGE_PASSWORD:?STORAGE_PASSWORD is not set - copy .env.example to .env and fill it in}
+      CLIPNEST_S3_RECORDINGS_BUCKET: ${STORAGE_RECORDINGS_BUCKET:-recordings}
+      CLIPNEST_ENCRYPTION_MASTER_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is not set - copy .env.example to .env and fill it in}
+      CLIPNEST_INTERNAL_API_KEY: ${INTERNAL_API_KEY:?INTERNAL_API_KEY is not set - copy .env.example to .env and fill it in}
+      CLIPNEST_INTERNAL_API_URL: http://clipnest-api:3000
+      CLIPNEST_FTPS_METRICS_PORT: "0"
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "${FTP_PORT:-21}:21"
+      - "30000-30099:30000-30099"
+    user: "1001"
+    cap_add: [NET_BIND_SERVICE]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 30s
+    volumes:
+      - certs:/certs:ro
+    depends_on:
+      init-certs: { condition: service_completed_successfully }
+      clipnest-api: { condition: service_healthy }
+    networks: [clipnest]
+
+  clipnest-db:
+    image: postgres:16.15-alpine3.24
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: clipnest
+      POSTGRES_USER: clipnest
+      # Used once, when the database is created. Changing it later needs the
+      # steps in README.md ("Secrets").
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD is not set - copy .env.example to .env and fill it in}
+    volumes:
+      - database:/var/lib/postgresql/data
+    networks: [clipnest]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clipnest -d clipnest"]
+      start_period: 5s
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: redis:7.4.11-alpine3.21
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    user: "999:999"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - redis:/data
+    networks: [clipnest]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      start_period: 2s
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  # ── Bundled object storage (profile "bundled-storage") ───────────────────
+  # Recordings are kept in this MinIO unless you point STORAGE_ENDPOINT at
+  # your own S3-compatible store and leave COMPOSE_PROFILES empty in .env;
+  # then these two services do not run.
+  #
+  # MinIO no longer publishes images; these are Chainguard's builds of it from
+  # source (AGPL, same server). Chainguard only publishes the moving "latest"
+  # tags, so they are pinned by digest (looked up 2026-10-16). Root so it can
+  # read the generated certificates.
+  minio:
+    image: cgr.dev/chainguard/minio:latest@sha256:2136d593beacf4461187035eca949fe49abd589d5079735025c711ca58fee0c8
+    profiles: [bundled-storage]
+    user: "0:0"
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${STORAGE_USER:-clipnest}
+      MINIO_ROOT_PASSWORD: ${STORAGE_PASSWORD:?STORAGE_PASSWORD is not set - copy .env.example to .env and fill it in}
+    command: server /data --certs-dir /certs
+    volumes:
+      # A named volume by default; RECORDINGS_DIR in .env puts it on a host
+      # directory instead.
+      - ${RECORDINGS_DIR:-recordings}:/data
+      - certs:/certs:ro
+    depends_on:
+      init-certs: { condition: service_completed_successfully }
+    networks: [clipnest]
+
+  # One-shot: create the three buckets.
+  init-storage:
+    image: cgr.dev/chainguard/minio-client:latest-dev@sha256:1189e5943c591d992b0c2a9fc73c03b9fd0c3b3a37b575c80fbe1a0ff2d71855
+    profiles: [bundled-storage]
+    user: "0:0"
+    environment:
+      STORAGE_USER: ${STORAGE_USER:-clipnest}
+      STORAGE_PASSWORD: ${STORAGE_PASSWORD:?STORAGE_PASSWORD is not set - copy .env.example to .env and fill it in}
+      RECORDINGS_BUCKET: ${STORAGE_RECORDINGS_BUCKET:-recordings}
+      THUMBNAILS_BUCKET: ${STORAGE_THUMBNAILS_BUCKET:-thumbnails}
+      SIDECARS_BUCKET: ${STORAGE_SIDECARS_BUCKET:-sidecars}
+    depends_on: [minio]
+    entrypoint: >
+      /bin/sh -c "
+        until mc --insecure alias set local https://minio:9000 \"$$STORAGE_USER\" \"$$STORAGE_PASSWORD\"; do sleep 1; done;
+        mc --insecure mb --ignore-existing \"local/$$RECORDINGS_BUCKET\" \"local/$$THUMBNAILS_BUCKET\" \"local/$$SIDECARS_BUCKET\";
+      "
+    networks: [clipnest]
+
+  # One-shot: private CA + certificates for the bundled object storage and the
+  # FTP server. Runs with your own object storage too: the FTP server needs
+  # its certificate either way.
+  init-certs:
+    image: alpine:3.24.2
+    environment:
+      FTP_HOST: ${FTP_HOST:?FTP_HOST is not set - copy .env.example to .env and fill it in}
+    volumes:
+      - certs:/certs
+      - ./docker/init-certs.sh:/init-certs.sh:ro
+    entrypoint: ["/bin/sh", "/init-certs.sh"]
+
+  # ── Automatic HTTPS (profile "https") ─────────────────────────────────────
+  # Caddy in front of the web app, on ports 80 and 443, with a free Let's
+  # Encrypt certificate for the domain in PUBLIC_URL that it renews by itself.
+  # Off until "https" is added to COMPOSE_PROFILES in .env; README.md ("HTTPS
+  # and access from outside your network") has the steps.
+  caddy:
+    image: caddy:2.11.7-alpine
+    profiles: [https]
+    restart: unless-stopped
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL:?PUBLIC_URL is not set - copy .env.example to .env and fill it in}
+    entrypoint: ["/bin/sh", "/https-proxy.sh"]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/https-proxy.sh:/https-proxy.sh:ro
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      # The certificate and the account at Let's Encrypt. Kept across
+      # restarts, because Let's Encrypt limits how many certificates a domain
+      # gets in a week.
+      - https-data:/data
+      - https-config:/config
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    depends_on: [clipnest-frontend]
+    networks: [clipnest]
+
+volumes:
+  database:
+  redis:
+  recordings:
+  certs:
+  https-data:
+  https-config:
+
+networks:
+  clipnest:
+
+# ────────────────────────────────── HTTPS ──────────────────────────────────
+# OpenClipnest itself speaks plain HTTP on WEB_PORT (8080). To reach it from
+# outside your home network — and for the iOS / macOS apps, which refuse plain
+# HTTP except on the local network — it needs HTTPS.
+#
+# Built in: the `caddy` service above. Add "https" to COMPOSE_PROFILES in .env
+# and set PUBLIC_URL to https://your-domain. README.md has the steps.
+#
+# A TLS proxy of your own instead (nginx, Traefik, Caddy, a tunnel), with the
+# "https" profile left off, must serve OpenClipnest at the root of a host name
+# (https://clips.example.com/); a sub-path (https://example.com/clips/) does
+# not work.
+#
+# Example with nginx (bring your own certificate, e.g. from certbot):
+#
+#   1. Create docker-compose.override.yml next to this file:
+#
+#        services:
+#          https-proxy:
+#            image: nginx:1.31.7-alpine3.24
+#            restart: unless-stopped
+#            ports: ["443:443"]
+#            volumes:
+#              - ./https-proxy.conf:/etc/nginx/conf.d/default.conf:ro
+#              - /etc/letsencrypt:/etc/letsencrypt:ro
+#            depends_on: [clipnest-frontend]
+#            networks: [clipnest]
+#
+#   2. Create https-proxy.conf next to it:
+#
+#        server {
+#          listen 443 ssl;
+#          server_name clips.example.com;
+#          ssl_certificate     /etc/letsencrypt/live/clips.example.com/fullchain.pem;
+#          ssl_certificate_key /etc/letsencrypt/live/clips.example.com/privkey.pem;
+#          client_max_body_size 1m;
+#          location / {
+#            proxy_pass http://clipnest-frontend:8080;
+#            proxy_http_version 1.1;
+#            proxy_set_header Host $host;
+#            proxy_set_header X-Forwarded-For $remote_addr;
+#            proxy_set_header X-Forwarded-Proto https;
+#            proxy_buffering off;
+#            proxy_read_timeout 300s;
+#          }
+#        }
+#
+#   3. In .env set PUBLIC_URL=https://clips.example.com, and optionally
+#      WEB_PORT=127.0.0.1:8080 so plain HTTP is only reachable from this
+#      machine. Then run `docker compose up -d`.
+#
+# Any other proxy works the same way (Caddy, Traefik, a tunnel): forward to
+# clipnest-frontend:8080 and keep response buffering off for video playback.

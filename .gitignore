@@ -1,0 +1,17 @@
+node_modules/
+dist/
+dist-mcp/
+frontend/dist/
+ftps-server/target/
+test-results/
+playwright-report/
+# Your settings and additions: never committed, so `git pull` never conflicts.
+.env
+.env.*
+!.env.example
+docker-compose.override.yml
+compose.override.yaml
+https-proxy.conf
+*.log
+.DS_Store
+.smoke/

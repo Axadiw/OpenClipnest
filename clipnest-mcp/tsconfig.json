@@ -1,0 +1,18 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "../dist-mcp",
+    "rootDir": ".."
+  },
+  "include": [
+    "./**/*.ts",
+    "../server/**/*.ts"
+  ],
+  "exclude": [
+    "**/*.test.ts",
+    "../server/**/*.test.ts",
+    "node_modules",
+    "../dist",
+    "../dist-mcp"
+  ]
+}

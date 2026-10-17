@@ -1,0 +1,10 @@
+# These files are read inside Linux containers and must keep LF line endings,
+# also in a checkout on Windows, where core.autocrlf=true would otherwise
+# convert them to CRLF (a shell script with CRLF fails in the container).
+*.sh            text eol=lf
+*.Dockerfile    text eol=lf
+Caddyfile       text eol=lf
+nginx.conf      text eol=lf
+.env.example    text eol=lf
+# Git hooks: a CR after the shebang breaks them.
+.husky/**       text eol=lf

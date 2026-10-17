@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/Axadiw/OpenClipnest/security/advisories/new
+    about: Report security problems privately here, never in a public issue.
+  - name: Installing and using OpenClipnest
+    url: https://github.com/Axadiw/OpenClipnest#readme
+    about: The README covers installing, cameras, the apps, backups, upgrades and the settings.

@@ -1,0 +1,73 @@
+# Keeps the pinned versions from going stale: base images in the Dockerfiles
+# and the compose file, GitHub Actions, and the npm and Cargo lockfiles.
+# The MCP server (clipnest-mcp/) shares the root package.json.
+#
+# Monthly and grouped, so a one-person project is not buried in pull requests.
+# Major versions are left out on purpose: moving an existing install from
+# Postgres 16 to 18 or Redis 7 to 8 needs a migration step, and a major bump of
+# a library or toolchain should be a decision with release notes, not a bot's
+# proposal. Bump those by hand when it is time.
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /docker
+    schedule:
+      interval: monthly
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: monthly
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: cargo
+    directory: /ftps-server
+    schedule:
+      interval: monthly
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]

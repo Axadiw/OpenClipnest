@@ -1,0 +1,23 @@
+# Automatic HTTPS for OpenClipnest: the Caddy of the "https" profile in
+# docker-compose.yml. Caddy gets a free Let's Encrypt certificate for your
+# domain, renews it before it expires and sends http:// to https://.
+#
+# Nothing to edit here. docker/https-proxy.sh starts Caddy with HTTPS_HOST set
+# to the host name in PUBLIC_URL (.env).
+{
+	# Nothing here needs a reload, so no admin endpoint. Only TCP 80 and 443
+	# are published, so no HTTP/3: advertising it would send clients to a UDP
+	# port that is not open.
+	admin off
+	servers {
+		protocols h1 h2
+	}
+}
+
+{$HTTPS_HOST} {
+	reverse_proxy clipnest-frontend:8080 {
+		# Pass data on as it arrives: video is streamed, and seeking is a
+		# series of Range requests.
+		flush_interval -1
+	}
+}

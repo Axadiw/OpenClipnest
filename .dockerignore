@@ -1,0 +1,12 @@
+.git
+**/node_modules
+**/dist
+dist-mcp
+ftps-server/target
+test-results
+e2e
+*.md
+# Settings and secrets never go into an image or the build context.
+.env
+.env.*
+.smoke

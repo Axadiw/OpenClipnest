@@ -1,0 +1,1219 @@
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root,[data-theme="dark"]{
+  --bg:#06070C;--bg2:#0D0F18;--bg3:#141620;--border:rgba(255,255,255,0.08);
+  --text:#E6E9F0;--text2:#8B91A6;--accent:#6EE7B7;--accent2:#818CF8;
+  --on-accent:#06070C;
+  --danger:#ef4444;--success:#6EE7B7;--radius:8px;
+  --error-bg:rgba(239,68,68,0.12);--overlay:rgba(6,7,12,.92);
+}
+[data-theme="light"]{
+  --bg:#f4f5f7;--bg2:#ffffff;--bg3:#e8eaed;--border:#d1d5db;
+  --text:#1f2937;--text2:#6b7280;--accent:#2563eb;--accent2:#1d4ed8;
+  --on-accent:#ffffff;
+  --danger:#dc2626;--success:#16a34a;--radius:8px;
+  --error-bg:#fee2e2;--overlay:rgba(0,0,0,.6);
+}
+/* min-height (not height) so the document can grow past the viewport
+   when content below the .app shell needs to render — most notably the
+   shared PublicFooter on logged-in marketing-aware pages. The .app
+   itself keeps `height: 100vh` so its own internal scrolling (event
+   grid, timeline) is unaffected; the footer just lives below the fold
+   and is reachable via body scroll. */
+html,body,#root{min-height:100%;margin:0}
+body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);line-height:1.55}
+/* Aurora background — dark mode only, STATIC.
+ *
+ * The animated version of this lived for two releases and burned the
+ * idle dashboard twice in a row:
+ *
+ * 1. v0.10.193 era — `transform: translate3d() scale()` with no compositor
+ *    hint. Chrome left the pseudo-element on the main layer; the scale()
+ *    re-rasterized the full-viewport radial gradients every frame,
+ *    pinning idle CPU at 90% native paint+layout work (2026-05-16 trace,
+ *    `(program)` self time = 21.5s of 24s).
+ * 2. v0.10.196 attempt — added `will-change: transform` and dropped
+ *    scale() to fix #1. Chrome dutifully promoted the pseudo-element to
+ *    its own compositor layer — and then kept enough layer/tile copies
+ *    around that the renderer process climbed from ~hundreds of MB to
+ *    2.3 GB on a Retina display. MDN and Chrome's perf docs explicitly
+ *    warn `will-change` is a temporary hint, not a permanent property.
+ *
+ * The animation was decorative — a slow parallax/breathing effect at
+ * 4-7% alpha. The radial gradients themselves are subtle enough that
+ * the motion was the only thing making them noticeable. Trading 2.3 GB
+ * of GPU memory for "you can sort of see the dots wobble" is not a
+ * trade we're willing to make. Keep the static gradient (cheap, one-time
+ * paint into the body layer), drop the animation entirely. */
+:root body::before,[data-theme="dark"] body::before{
+  content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:
+    radial-gradient(ellipse 80% 60% at 60% 30%,rgba(110,231,183,0.07) 0%,transparent 70%),
+    radial-gradient(ellipse 60% 70% at 20% 70%,rgba(129,140,248,0.06) 0%,transparent 60%),
+    radial-gradient(ellipse 70% 50% at 80% 80%,rgba(244,114,182,0.04) 0%,transparent 60%);
+}
+[data-theme="light"] body::before{display:none}
+input,button,select{font:inherit;color:inherit}
+input[type="text"],input[type="email"],input[type="password"],input[type="date"],input[type="time"],input[type="datetime-local"]{
+  background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px;color:var(--text);outline:none;
+}
+input:focus{border-color:var(--accent)}
+/* The native calendar/clock picker indicator is rendered by the UA as a
+   dark glyph on a transparent backdrop — invisible against our dark
+   --bg3 input fill. Invert it in dark mode so the icon reads as light. */
+:root input[type="date"]::-webkit-calendar-picker-indicator,
+:root input[type="time"]::-webkit-calendar-picker-indicator,
+:root input[type="datetime-local"]::-webkit-calendar-picker-indicator,
+[data-theme="dark"] input[type="date"]::-webkit-calendar-picker-indicator,
+[data-theme="dark"] input[type="time"]::-webkit-calendar-picker-indicator,
+[data-theme="dark"] input[type="datetime-local"]::-webkit-calendar-picker-indicator{
+  filter:invert(1);opacity:.6;cursor:pointer;
+}
+/* Chrome/Safari autofill defaults to a light-yellow box that ignores our
+   dark theme. Pin the fill text + box-shadow so autofill matches the rest
+   of the form. */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active{
+  -webkit-text-fill-color:var(--text);
+  caret-color:var(--text);
+  box-shadow:0 0 0 1000px var(--bg3) inset;
+  transition:background-color 99999s ease-in-out 0s;
+}
+
+/* Default app shell flows with the body so the events grid and the
+   PublicFooter below it scroll as one continuous document — no nested
+   "iframe-style" inner scroll on the events list. */
+/* z-index:2 keeps .app above the .public-footer (z-index:1) — without it the
+   footer's stacking context bleeds through the fixed VideoPlayer overlay
+   when an event is playing. */
+.app{display:flex;flex-direction:column;min-height:100vh;position:relative;z-index:2}
+/* Timeline view bolts the layout to the viewport instead. The inline
+   player + ribbon share a fixed-height surface so the player stays
+   visible while the user scrubs the time ribbon. The PublicFooter is
+   still reachable via body scroll past the .app-timeline 100vh slab. */
+.app-timeline{height:100vh;overflow:hidden}
+
+/* Buttons */
+.btn{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:6px 14px;cursor:pointer;transition:all .15s;color:var(--text);display:inline-flex;align-items:center;gap:5px}
+@media(hover:hover){.btn:hover:not(:disabled){background:var(--accent);border-color:var(--accent);color:var(--on-accent)}}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn-sm{padding:4px 10px;font-size:.8rem}
+.btn-primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:600}
+.flow-card{max-width:640px}
+.btn-icon{padding:6px;border:none;background:none;color:var(--text2)}
+@media(hover:hover){.btn-icon:hover{color:var(--accent)}}
+.btn-danger{color:var(--danger);border-color:var(--danger)}
+@media(hover:hover){.btn-danger:hover:not(:disabled){background:var(--danger);color:#fff}}
+.btn.active,.btn-view-toggle.active{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+
+/* Auth pages */
+.auth-page{display:flex;justify-content:center;align-items:center;min-height:100vh}
+.auth-form{background:var(--bg2);padding:28px;border-radius:12px;width:100%;max-width:360px;display:flex;flex-direction:column;gap:10px;border:1px solid var(--border)}
+.auth-logo{display:block;width:64px;height:64px;margin:0 auto 8px;border-radius:14px}
+.auth-form h1{text-align:center;font-size:1.3rem}
+.auth-form .subtitle{text-align:center;color:var(--text2);font-size:.85rem}
+.remember-me{display:flex;align-items:center;gap:6px;font-size:.85rem;color:var(--text2);cursor:pointer;user-select:none}
+.remember-me input[type="checkbox"]{accent-color:var(--accent);width:16px;height:16px;cursor:pointer}
+/* Default auth-form button = primary CTA. Inline-styled link buttons
+   (forgot-password, create-account, etc.) override this with their own
+   inline `style={{ background: 'none', border: 'none' }}`. */
+.auth-form > button{background:var(--accent);border:1px solid var(--accent);border-radius:var(--radius);padding:8px;cursor:pointer;color:var(--on-accent);font-weight:600;margin-top:4px}
+/* "OR" separator between the email/password form and the OAuth buttons.
+   Lives inside OAuthButtons so it vanishes with them when no provider is
+   configured. Centered label with a hairline rule on each side. */
+.auth-divider{display:flex;align-items:center;gap:10px;color:var(--text2);font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;margin:2px 0}
+.auth-divider::before,.auth-divider::after{content:"";flex:1;height:1px;background:var(--border)}
+.error{background:var(--error-bg);color:var(--danger);padding:6px 10px;border-radius:var(--radius);font-size:.85rem;text-align:center}
+
+/* Header */
+.app-header{display:flex;align-items:center;justify-content:space-between;padding:8px 16px;background:rgba(13,15,24,0.82);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid var(--border);flex-shrink:0;gap:6px;min-height:0;position:relative;z-index:10}
+[data-theme="light"] .app-header{background:rgba(255,255,255,0.85);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+.header-brand{display:flex;align-items:center;gap:8px;text-decoration:none;color:inherit;cursor:pointer;min-width:0;flex-shrink:1}
+.header-logo{width:28px;height:28px;border-radius:6px;flex-shrink:0}
+.header-title{font-size:1.05rem;font-weight:700;letter-spacing:-0.3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.header-actions{display:flex;align-items:center;gap:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Dropdown menu */
+.menu-wrapper{position:relative}
+.dropdown-menu{position:absolute;right:0;top:100%;margin-top:4px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);min-width:200px;z-index:50;overflow:hidden}
+.dropdown-menu button{display:block;width:100%;text-align:left;padding:8px 14px;background:none;border:none;color:var(--text);cursor:pointer;font-size:.85rem}
+.dropdown-menu button:hover{background:var(--bg3)}
+/* Hard-navigation links inside the dropdown (public marketing/legal
+ * pages). Visually identical to the buttons; they're <a> instead of
+ * <button> because they trigger a full reload to switch out of the
+ * SPA-app shell into the public layout. */
+.dropdown-menu a.dropdown-link{display:block;width:100%;text-align:left;padding:8px 14px;background:none;color:var(--text);cursor:pointer;font-size:.85rem;text-decoration:none}
+.dropdown-menu a.dropdown-link:hover{background:var(--bg3)}
+.dropdown-menu hr{border:none;border-top:1px solid var(--border);margin:0}
+/* Install-PWA button in the header. Subtle accent border so it reads
+   as actionable without taking over the chrome. Hidden on small
+   viewports — the dropdown's iOS hint covers phones already. */
+.btn-install-pwa{border-color:var(--accent);color:var(--accent)}
+@media(hover:hover){.btn-install-pwa:hover:not(:disabled){background:var(--accent);border-color:var(--accent);color:var(--on-accent)}}
+@media(max-width:520px){.btn-install-pwa .btn-install-label{display:none}}
+.dropdown-info{padding:6px 14px;font-size:.8rem;color:var(--text2)}
+
+/* Notifications bell + dropdown */
+.notifications-wrapper{position:relative}
+.notifications-bell{position:relative;padding:6px 8px}
+.notifications-badge{position:absolute;top:-4px;right:-4px;background:#c0392b;color:#fff;border-radius:10px;font-size:.65rem;line-height:1;padding:2px 5px;min-width:14px;text-align:center;font-weight:600}
+.notifications-dropdown{min-width:320px;max-width:380px;max-height:480px;overflow-y:auto}
+.notifications-header{display:flex;justify-content:space-between;align-items:center;padding:8px 14px;border-bottom:1px solid var(--border);gap:8px}
+.notification-item{display:flex;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer;align-items:flex-start}
+.notification-item:hover{background:var(--bg3)}
+.notification-item.notification-read{opacity:.55;cursor:default}
+.notification-icon{font-size:1.1rem;line-height:1.2;flex-shrink:0}
+.notification-body{flex:1;min-width:0}
+.notification-message{font-size:.85rem;color:var(--text);word-wrap:break-word}
+.notification-time{font-size:.7rem;color:var(--text2);margin-top:2px}
+.notifications-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.notifications-dropdown button{display:inline-flex;width:auto;text-align:center;padding:4px 10px}
+.notification-delete{flex-shrink:0;padding:4px 6px;opacity:.5;background:none;border:none}
+.notification-item:hover .notification-delete{opacity:1}
+.notification-open{margin-top:6px;font-size:.75rem}
+.notification-group{border-bottom:1px solid var(--border)}
+.notification-group:last-child{border-bottom:none}
+.notification-group-header{display:flex;gap:10px;padding:10px 14px;cursor:pointer;align-items:center}
+.notification-group-header:hover{background:var(--bg3)}
+.notification-group-allread{opacity:.55}
+.notification-group-allread:hover{opacity:.8}
+.notification-group-title{display:flex;align-items:center;gap:6px;font-size:.85rem;color:var(--text);font-weight:600}
+.notification-group-count{display:inline-flex;min-width:18px;height:18px;padding:0 6px;border-radius:9px;background:var(--bg3);color:var(--text);font-size:.7rem;font-weight:600;align-items:center;justify-content:center;line-height:1}
+.notification-group-unread{display:inline-flex;min-width:14px;height:14px;padding:0 4px;border-radius:7px;background:#c0392b;color:#fff;font-size:.6rem;font-weight:600;align-items:center;justify-content:center;line-height:1}
+.notification-group-chevron{display:inline-flex;flex-shrink:0;color:var(--text2);transition:transform .15s ease;width:16px;height:16px;align-items:center;justify-content:center}
+.notification-group-chevron-open{transform:rotate(90deg)}
+.notification-group-header .notification-delete{margin-left:0}
+.notification-group-children{border-top:1px solid var(--border);background:rgba(0,0,0,0.08);padding-left:8px}
+.notification-item-grouped{border-bottom:1px solid rgba(255,255,255,0.04);border-left:2px solid var(--border)}
+.notification-item-grouped:last-child{border-bottom:none}
+.ban-notice{background:rgba(192,57,43,.12);border:1px solid #c0392b;border-radius:6px;padding:12px 14px;margin-bottom:8px;color:#c0392b}
+.ban-notice-title{font-weight:600;margin-bottom:4px}
+.ban-notice-reason{font-size:.85rem;margin-bottom:4px;color:var(--text)}
+.ban-notice-countdown{font-size:.8rem;color:var(--text2);font-variant-numeric:tabular-nums}
+
+/* Toolbar / Filters */
+.toolbar{padding:6px 16px;background:rgba(13,15,24,0.72);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px;flex-shrink:0;flex-wrap:nowrap;overflow:hidden;position:relative;z-index:9}
+[data-theme="light"] .toolbar{background:var(--bg2);backdrop-filter:none}
+.filter-wrapper{flex:1 1 0;min-width:0;position:relative}
+.toolbar-count{font-size:.8rem;color:var(--text2);white-space:nowrap;flex-shrink:0}
+.view-toggle{display:flex;gap:2px;flex-shrink:0}
+.btn-cache-all{flex-shrink:0}
+.btn-filter{position:relative}
+.badge{background:var(--accent);color:var(--on-accent);font-size:.65rem;padding:1px 5px;border-radius:10px;margin-left:2px}
+/* Filter panel typography is unified at .8rem so labels, chips, and date
+   inputs sit at the same scale — the previous mix of .8/.75/default was
+   the "different font sizes" complaint. */
+/* Popover rendered via a React portal into <body> so it escapes the
+   toolbar's overflow:hidden + backdrop-filter containing block. The panel
+   is positioned by inline `top`/`left` set from the trigger's bounding
+   rect, so the only thing CSS owns is size, chrome, and the mobile
+   viewport-pin. */
+.filter-panel{position:fixed;min-width:280px;max-width:min(calc(100vw - 24px),720px);max-height:calc(100vh - 120px);overflow-y:auto;padding:10px 12px;display:flex;flex-direction:column;gap:8px;font-size:.8rem;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 8px 24px rgba(0,0,0,.35);z-index:50}
+@media(max-width:640px){
+  .filter-panel{left:8px!important;right:8px;max-width:none;min-width:0}
+}
+.filter-group{display:flex;align-items:center;gap:6px}
+.filter-group label{font-size:.8rem;color:var(--text2);white-space:nowrap;min-width:50px}
+.filter-group input[type="date"],.filter-group input[type="time"],.filter-group input[type="datetime-local"]{font:inherit;font-size:.8rem;padding:4px 6px}
+.filter-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.filter-mode-toggle{display:flex;gap:4px}
+.filter-hint{font-size:.75rem;color:var(--text2);font-style:italic;padding:2px 4px}
+/* .chip is the daily/range mode-toggle pill (the camera chips were replaced
+   by CameraChecklist; .camera-chips removed as dead). */
+.chip{padding:3px 10px;border-radius:16px;font-size:.8rem;cursor:pointer;background:var(--bg3);border:1px solid var(--border);color:var(--text2);transition:all .15s}
+.chip.active{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.chip:hover{border-color:var(--accent)}
+
+/* Events filter hosts the shared camera checklist (same body the timeline
+   popover uses) stacked vertically inside the portal-rendered filter panel.
+   The base .filter-group is a centered horizontal row, so override to a
+   stretched column and bound the list so it scrolls while search/actions
+   stay pinned above it. */
+.filter-group--cameras{flex-direction:column;align-items:stretch;gap:0}
+.filter-group--cameras>label{margin-bottom:4px}
+.filter-group--cameras .timeline-camfilter-search{margin:0 0 6px}
+.filter-group--cameras .timeline-camfilter-actions{padding:0 0 8px}
+.filter-group--cameras .timeline-camfilter-list{max-height:220px}
+
+/* Event list — scrolls in remaining space */
+.event-list{padding:12px 16px}
+.thumb-size-toggle{display:flex;gap:2px;flex-shrink:0;align-self:center}
+.btn-icon-sm{background:none;border:1px solid transparent;border-radius:var(--radius);padding:4px;cursor:pointer;color:var(--text2);display:inline-flex;align-items:center;justify-content:center;transition:all .15s}
+.btn-icon-sm:hover{color:var(--accent)}
+.btn-icon-sm.active{color:var(--accent);border-color:var(--accent);background:var(--bg3)}
+.event-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--card-min-width,260px),1fr));gap:8px}
+.status-msg{text-align:center;padding:60px 20px;color:var(--text2)}
+
+/* Day headers */
+.day-header{font-size:.85rem;font-weight:600;color:var(--text2);padding:16px 0 10px;border-bottom:1px solid var(--border);margin-bottom:10px;margin-top:8px;text-transform:capitalize}
+.day-header:first-of-type{margin-top:0}
+.current-day-bar{font-size:.8rem;font-weight:600;color:var(--text2);padding:6px 16px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0;text-transform:capitalize}
+
+/* Event card */
+.event-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;transition:border-color .15s}
+.event-card:hover{border-color:var(--accent)}
+.event-thumbnail{aspect-ratio:16/9;background:var(--bg3);cursor:pointer;position:relative;overflow:hidden}
+.event-thumbnail img{width:100%;height:100%;object-fit:cover}
+.no-thumbnail{display:flex;align-items:center;justify-content:center;height:100%;color:var(--text2)}
+.thumb-placeholder{display:flex;align-items:center;justify-content:center}
+.thumbnail-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0);transition:background .15s;opacity:0}
+.event-thumbnail:hover .thumbnail-overlay{background:rgba(0,0,0,.4);opacity:1}
+.duration-badge{position:absolute;bottom:4px;right:4px;background:rgba(0,0,0,.75);color:#fff;font-size:.65rem;font-weight:600;padding:1px 5px;border-radius:3px;font-variant-numeric:tabular-nums;line-height:1.4;pointer-events:none}
+.event-bottom{display:flex;align-items:center;justify-content:space-between;padding:6px 10px}
+.event-info{display:flex;align-items:center;gap:6px;min-width:0;flex:1}
+.camera-badge{background:var(--accent);color:var(--on-accent);padding:1px 6px;border-radius:4px;font-size:.65rem;font-weight:600;text-transform:uppercase;flex-shrink:0}
+.event-time{font-size:.75rem;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.time-ago{opacity:.65;font-size:.7rem}
+.event-actions{display:flex;gap:3px;flex-shrink:0}
+
+/* View buttons (compact, icon-based) */
+.btn-view{display:inline-flex;align-items:center;gap:3px;padding:4px 6px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text2);font-size:.7rem;transition:all .15s}
+.btn-view:hover{border-color:var(--accent);color:var(--text)}
+
+/* View toggle in player */
+.btn-view-toggle{display:inline-flex;align-items:center;padding:4px 8px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text2);transition:all .15s}
+.btn-view-toggle:hover{border-color:var(--accent)}
+
+/* Cache indicator */
+.cache-dot{font-size:.55rem;line-height:1}
+.cache-dot.cached{color:var(--success)}
+.cache-progress{width:24px;height:4px;background:var(--bg);border-radius:2px;overflow:hidden;display:inline-block;vertical-align:middle}
+.cache-progress-bar{height:100%;background:var(--accent);transition:width .2s}
+
+/* Infinite scroll */
+.infinite-sentinel{height:1px}
+.status-msg-inline{padding:1rem;text-align:center;opacity:.7;font-size:.85rem;color:var(--text2)}
+
+/* Video player overlay */
+.player-overlay{position:fixed;inset:0;background:var(--overlay);z-index:100;display:flex;align-items:center;justify-content:center}
+.player-container{background:var(--bg2);border-radius:8px;width:100%;max-width:98vw;height:98vh;display:flex;flex-direction:column;border:1px solid var(--border);overflow:hidden}
+.player-header{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.player-time{font-size:.8rem;color:var(--text2);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.player-view-toggle{display:flex;gap:3px}
+/* Overlapping-event chips in the timeline-view inline player. Surfaces
+   when 2+ events on the current camera intersect in time — the bar on
+   top hides the one underneath on the timeline ribbon, so without these
+   chips the user has no way to flip between them. The list is THIS
+   camera, AT THIS moment — not "all events on the camera in the
+   viewport". */
+.timeline-player-overlapping{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+.timeline-overlapping-chip{font-family:'JetBrains Mono',monospace;font-size:.72rem;padding:3px 8px;background:var(--bg3);border:1px solid var(--border);border-radius:999px;color:var(--text2);cursor:pointer;font-variant-numeric:tabular-nums;line-height:1;transition:all .12s}
+@media(hover:hover){.timeline-overlapping-chip:hover:not(:disabled){background:var(--accent);border-color:var(--accent);color:var(--on-accent)}}
+.timeline-overlapping-chip.active{background:var(--accent);border-color:var(--accent);color:var(--on-accent);cursor:default}
+.timeline-overlapping-chip:disabled{cursor:default}
+/* Close button must visibly stand out from the row of other icon buttons
+   (download/star/tag) — it's the dismiss action and the one users reach
+   for first when they want out. Inherited muted `--text2` styling made
+   it nearly invisible (user report 2026-04-29). Now: circular chip with
+   border + full-contrast text, hover flips to danger red. Mobile bumps
+   to 40px for a real 44px-class tap target. */
+/* `margin-left:auto` pushes the close chip to the far right of the
+   player header — on a mobile viewport it lands on the screen edge
+   so "tap to dismiss" reads as a primary action instead of yet
+   another icon next to download/star/tag. The other action buttons
+   (download/star/tag) stay grouped with the camera badge on the
+   left; only the close chip floats. */
+.btn-close-player{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;background:var(--bg3);border:1px solid var(--border);border-radius:50%;color:var(--text);cursor:pointer;flex-shrink:0;margin-left:auto;padding:0;transition:background .15s,color .15s,border-color .15s}
+.btn-close-player:hover{background:var(--danger);color:#fff;border-color:var(--danger)}
+.btn-close-player:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.player-body{flex:1;min-height:0;background:#000;display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative}
+.player-body>.react-transform-wrapper,.timeline-inline-video-wrap>.react-transform-wrapper{width:100%;height:100%}
+.player-body .react-transform-component,.timeline-inline-video-wrap .react-transform-component{width:100%!important;height:100%!important}
+.video-zoom-container{width:100%;height:100%;overflow:hidden;display:flex;align-items:center;justify-content:center;touch-action:none}
+.player-video{width:100%;height:100%;object-fit:contain;outline:none;transform-origin:center center;position:relative;z-index:1}
+/* Custom <video> control bar (VideoControls.tsx). Replaces the browser-native
+   controls so the scrubber can be green (var(--success)) like the iOS app —
+   native video scrubbers can't be themed via CSS in Chrome/Firefox/Safari. */
+.video-controls{position:absolute;left:0;right:0;bottom:0;z-index:11;display:flex;align-items:center;gap:10px;padding:8px 12px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);color:#fff;transition:opacity .2s;font-variant-numeric:tabular-nums}
+.video-controls-hidden{opacity:0;pointer-events:none}
+.video-controls-btn{position:relative;display:flex;align-items:center;justify-content:center;width:32px;height:32px;flex-shrink:0;background:transparent;border:none;color:#fff;cursor:pointer;border-radius:6px;opacity:.85;transition:opacity .15s,background .15s}
+.video-controls-btn:hover{opacity:1;background:rgba(255,255,255,.12)}
+.video-controls-spinner{position:absolute;inset:0;margin:auto;width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite}
+.video-controls-time{flex-shrink:0;font-size:.78rem;white-space:nowrap;opacity:.9}
+.video-controls-seek{position:relative;flex:1;min-width:60px;height:16px;display:flex;align-items:center;cursor:pointer;touch-action:none}
+.video-controls-seek:focus-visible{outline:2px solid var(--success);outline-offset:2px;border-radius:3px}
+.video-controls-seek-track{position:absolute;left:0;right:0;height:5px;border-radius:3px;background:rgba(255,255,255,.25)}
+.video-controls-seek-buffered{position:absolute;left:0;height:5px;border-radius:3px;background:rgba(255,255,255,.45)}
+.video-controls-seek-played{position:absolute;left:0;height:5px;border-radius:3px;background:var(--success)}
+.video-controls-seek-thumb{position:absolute;top:50%;width:13px;height:13px;border-radius:50%;background:var(--success);transform:translate(-50%,-50%);box-shadow:0 0 2px rgba(0,0,0,.6)}
+.video-controls-volume{width:64px;flex-shrink:0;accent-color:var(--success);cursor:pointer}
+.video-controls-speed-wrap{position:relative;flex-shrink:0}
+.video-controls-speed{width:auto;min-width:34px;padding:0 6px;font-size:.78rem;font-weight:600}
+.video-controls-speed-menu{position:absolute;bottom:38px;right:0;display:flex;flex-direction:column;background:rgba(20,20,20,.96);border:1px solid rgba(255,255,255,.15);border-radius:6px;padding:4px;gap:2px;z-index:12}
+.video-controls-speed-item{background:transparent;border:none;color:#fff;font-size:.78rem;padding:4px 12px;border-radius:4px;cursor:pointer;text-align:right}
+.video-controls-speed-item:hover{background:rgba(255,255,255,.12)}
+.video-controls-speed-item.active{color:var(--success);font-weight:600}
+.no-video{color:var(--text2);padding:40px;text-align:center}
+
+/* Zoom controls */
+.zoom-controls{position:absolute;bottom:52px;right:8px;display:flex;flex-direction:column;align-items:center;gap:4px;background:rgba(0,0,0,.6);border-radius:8px;padding:6px;backdrop-filter:blur(4px);z-index:10;transition:opacity .2s}
+/* Grid/fullscreen player: fade the zoom + frame-step cluster out in lockstep
+   with the playback bar's auto-hide (driven by VideoZoom's controlsHidden). */
+.zoom-controls-hidden{opacity:0;pointer-events:none}
+/* In the always-on timeline player the zoom cluster fades out until the
+   player is hovered, matching the old step-only controls. The grid player
+   (modal) keeps it fully visible. */
+.timeline-inline-video-wrap .zoom-controls{opacity:.35;transition:opacity .15s}
+.timeline-inline-video-wrap:hover .zoom-controls{opacity:1}
+.zoom-btn{display:flex;align-items:center;justify-content:center;width:30px;height:30px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:6px;color:#fff;cursor:pointer;transition:all .15s}
+.zoom-btn:hover:not(:disabled){background:rgba(255,255,255,.25)}
+.zoom-btn:disabled{opacity:.3;cursor:not-allowed}
+.zoom-level{font-size:.7rem;color:rgba(255,255,255,.8);font-variant-numeric:tabular-nums;min-width:36px;text-align:center}
+
+.player-footer{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-top:1px solid var(--border)}
+.cache-controls{display:flex;align-items:center;gap:6px}
+
+/* Modal (user management) */
+.modal-container{background:var(--bg2);border-radius:12px;width:100%;max-width:640px;max-height:85vh;overflow-y:auto;border:1px solid var(--border);padding:0 0 16px}
+.modal-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)}
+.modal-header h2{font-size:1rem}
+.users-table{width:100%;border-collapse:collapse;font-size:.85rem}
+.users-table th{text-align:left;padding:6px 14px;color:var(--text2);font-weight:500;border-bottom:1px solid var(--border)}
+.users-table td{padding:6px 14px;border-bottom:1px solid var(--border)}
+.user-actions{position:relative;text-align:right;white-space:nowrap}
+.user-actions>.btn+.btn{margin-left:6px}
+.users-table td.user-actions{width:48px}
+/* Plan table reuses .user-actions but renders two buttons (Edit + Delete);
+   override the 48px cap so they sit side-by-side instead of wrapping. */
+.users-table td.user-actions:has(>.btn+.btn){width:auto;min-width:140px}
+.actions-menu-wrapper{position:relative;display:inline-block}
+.btn-icon{padding:4px 6px;display:inline-flex;align-items:center;justify-content:center}
+.actions-dropdown{min-width:180px}
+.actions-dropdown .dropdown-item-danger{color:var(--danger)}
+.actions-dropdown .dropdown-item-danger:hover{background:rgba(220,53,69,.12)}
+.inline-form{display:flex;gap:3px;align-items:center}
+/* When the inline editor (reset password / ban form) opens, float it as an
+   absolute popover over the cell so the actions column doesn't widen and
+   shove the rest of the table out of alignment. */
+.user-actions > .inline-form{position:absolute;top:100%;right:0;margin-top:4px;z-index:10;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:6px 8px;box-shadow:0 4px 12px rgba(0,0,0,.2);white-space:nowrap}
+.add-user-form{padding:12px 16px}
+.add-user-form h3{font-size:.9rem;margin-bottom:6px;color:var(--text2)}
+.form-row{display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:.85rem}
+.form-row input,.form-row .btn{font-size:.85rem;padding:5px 10px}
+.checkbox-label{display:flex;align-items:center;gap:3px;font-size:.85rem;cursor:pointer}
+
+/* Spinner */
+.spinner{width:28px;height:28px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
+
+/* ====== Timeline view ====== */
+.timeline-container{display:flex;flex-direction:column;padding:0 16px 0;flex:1;min-height:0;overflow:hidden}
+
+/* Section 1: Video player — top, takes majority of screen when visible */
+.timeline-section-player{flex:1 1 0;min-height:120px;display:flex;flex-direction:column;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg2);overflow:hidden}
+.timeline-section-player .timeline-inline-video{flex:1;min-height:0;width:100%;background:#000;display:block;object-fit:contain}
+/* Wrapper that lets us overlay a buffering spinner on top of the <video> */
+.timeline-inline-video-wrap{position:relative;flex:1;min-height:0;display:flex}
+/* The <video> now sits inside VideoZoom's transform component, so it sizes
+   by explicit 100%/contain (like the grid's .player-video) rather than flex. */
+.timeline-inline-video-wrap .timeline-inline-video{flex:none;width:100%;height:100%;object-fit:contain;transform-origin:center center}
+/* Two-layer loading affordance: a sibling `BlurredThumbnailBackdrop`
+ * (z-index:4) is what now masks the native <video> chrome's own buffering
+ * spinner — it's a solid div (with the blurred thumbnail on top once
+ * fetched), so the overlay no longer needs to be opaque black. The overlay
+ * itself sits at z-index:5 with a semi-transparent scrim that darkens the
+ * blurred thumbnail just enough to keep the spinner + "Seeking…" copy
+ * readable on bright frames.
+ *
+ * `video-buffer-overlay` is the generic class — both the Timeline inline
+ * player AND the grid-view full-screen VideoPlayer use it. The
+ * `timeline-inline-video-buffer-overlay` alias remains for the (still
+ * existing) timeline DOM nodes; new call sites should use the short name. */
+.video-buffer-overlay,
+.timeline-inline-video-buffer-overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:rgba(0,0,0,.45);pointer-events:none;animation:fade-in .15s ease-out;color:#fff;font-size:.95rem;font-weight:500;letter-spacing:.02em;text-shadow:0 1px 2px rgba(0,0,0,.7);z-index:5}
+.video-buffer-overlay .spinner,
+.timeline-inline-video-buffer-overlay .spinner{width:44px;height:44px;border-width:4px}
+/* Blurred thumbnail layer: sits between the <video> (z-index:1) and the
+ * buffer overlay (z-index:5). Solid black by default — when the thumbnail
+ * blob arrives the <img> covers it. `transform:scale(1.1)` hides the white
+ * fringe the blur kernel produces at the edges. Fades out via opacity once
+ * the first frame of the actual video is decoded. */
+.blurred-thumbnail-backdrop{position:absolute;inset:0;overflow:hidden;background:#000;pointer-events:none;z-index:4;transition:opacity 250ms ease-out}
+.blurred-thumbnail-backdrop.is-hidden{opacity:0}
+.blurred-thumbnail-backdrop img{width:100%;height:100%;object-fit:cover;filter:blur(24px) saturate(1.1);transform:scale(1.1);display:block}
+.video-buffer-label,
+.timeline-inline-video-buffer-label{max-width:80%;text-align:center}
+.buffer-pct{font-size:.8rem;font-weight:400;opacity:.65;letter-spacing:.04em;margin-top:-6px}
+.buffer-mb{opacity:.8;font-variant-numeric:tabular-nums}
+@keyframes fade-in{from{opacity:0}to{opacity:1}}
+/* Subtle pulsing dot pinned to the playhead — communicates "buffering"
+ * without blocking the timeline so the user can still pan/zoom/click
+ * while the seek is being applied. */
+.timeline-playhead-buffer{fill:var(--danger);animation:playhead-pulse 1s ease-in-out infinite}
+@keyframes playhead-pulse{0%,100%{opacity:1;r:4}50%{opacity:.35;r:7}}
+
+/* === Timeline date picker === */
+.timeline-datepicker-anchor{position:relative;display:inline-flex}
+.timeline-datepicker-trigger{display:inline-flex;align-items:center}
+/* Anchored to the bottom of the trigger and growing UPWARD because the
+ * trigger lives in the timeline footer, pinned to the bottom edge of
+ * the viewport — opening downward would let the calendar overflow the
+ * page. The mobile rule below switches to a fixed-bottom layout for
+ * narrow viewports where even upward growth runs out of room. */
+.timeline-datepicker-popover{position:absolute;bottom:calc(100% + 6px);left:0;z-index:50;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:10px;min-width:260px;box-shadow:0 -8px 24px rgba(0,0,0,.35)}
+/* Flip the popover to grow downward when embedded inside a panel that
+ * itself flows downward (FilterBar). The default above-anchor layout
+ * makes sense for the Timeline footer but would clip inside a dropdown. */
+.timeline-datepicker-popover--below{bottom:auto;top:calc(100% + 6px);box-shadow:0 8px 24px rgba(0,0,0,.35)}
+/* Per-camera visibility filter (checkbox popover) */
+.timeline-camfilter-anchor{position:relative;display:inline-flex}
+.timeline-camfilter-popover{position:absolute;bottom:calc(100% + 6px);left:0;z-index:50;width:264px;max-height:340px;display:flex;flex-direction:column;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 -8px 24px rgba(0,0,0,.35)}
+.timeline-camfilter-search{margin:8px 8px 6px;padding:5px 8px;font-size:12.5px;border:1px solid var(--border);border-radius:6px;background:var(--bg2);color:var(--text)}
+.timeline-camfilter-actions{display:flex;gap:6px;padding:0 8px 8px;border-bottom:1px solid var(--border)}
+.timeline-camfilter-actions .btn{flex:1}
+.timeline-camfilter-list{overflow-y:auto;padding:4px 0}
+.timeline-camfilter-item{display:flex;align-items:center;gap:8px;padding:4px 10px;font-size:.8rem;cursor:pointer;color:var(--text)}
+.timeline-camfilter-item:hover{background:var(--bg3)}
+.timeline-camfilter-item input{accent-color:var(--accent);cursor:pointer;flex-shrink:0}
+.timeline-camfilter-item .timeline-cam-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.timeline-camfilter-empty{padding:10px;font-size:.78rem;color:var(--text2);text-align:center}
+.timeline-datepicker-header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.timeline-datepicker-month{font-weight:600;font-size:.95rem;text-transform:capitalize}
+.timeline-datepicker-weekdays{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:4px}
+.timeline-datepicker-weekday{text-align:center;font-size:.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:.04em;padding:2px 0}
+.timeline-datepicker-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
+.timeline-datepicker-day{
+  appearance:none;position:relative;border:1px solid transparent;background:var(--bg);
+  color:var(--text);font-size:.8rem;height:32px;border-radius:4px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;padding:0;
+  transition:background-color .1s,border-color .1s
+}
+.timeline-datepicker-day:hover:not(:disabled){border-color:var(--accent)}
+.timeline-datepicker-day:disabled{cursor:default;opacity:.4}
+.timeline-datepicker-day.out-of-month{color:var(--text2);opacity:.55}
+.timeline-datepicker-day.today{outline:1px solid var(--accent)}
+.timeline-datepicker-day.selected{border-color:var(--accent);font-weight:700}
+/* Heat buckets — green gradient indicating per-day activity. The colours
+ * mirror GitHub's commit heatmap idea but with HIGH alpha at every step
+ * so the lowest bucket is clearly distinguishable from "no recordings"
+ * even on a dark background. The earlier subtler palette (.18 alpha for
+ * heat-1) was effectively invisible against `var(--bg)` and the calendar
+ * looked uncolored to users. Saturated borders reinforce the heat level
+ * for users with reduced colour discrimination. */
+.timeline-datepicker-day.heat-0{background:var(--bg)}
+.timeline-datepicker-day.heat-1{background:rgba(34,197,94,.35);border-color:rgba(34,197,94,.55);color:var(--text)}
+.timeline-datepicker-day.heat-2{background:rgba(34,197,94,.55);border-color:rgba(34,197,94,.75);color:var(--text)}
+.timeline-datepicker-day.heat-3{background:rgba(34,197,94,.78);border-color:rgba(34,197,94,.95);color:#fff;font-weight:600}
+.timeline-datepicker-day.heat-4{background:rgba(34,197,94,.96);border-color:#16a34a;color:#fff;font-weight:700;box-shadow:inset 0 0 0 1px rgba(255,255,255,.18)}
+/* Tiny "has recordings" dot below the day number — fires whenever the
+ * day has any non-zero event count, regardless of bucket. Backstop
+ * indicator for days where a low-bucket tint still looks too close to
+ * the dark theme background. Hidden when count is 0. */
+.timeline-datepicker-day[data-event-count]:not([data-event-count="0"])::after{
+  content:'';position:absolute;bottom:3px;left:50%;transform:translateX(-50%);
+  width:4px;height:4px;border-radius:50%;background:#fff;opacity:.85;
+  box-shadow:0 0 0 1px rgba(0,0,0,.35)
+}
+.timeline-datepicker-footer{display:flex;align-items:center;justify-content:space-between;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)}
+.timeline-datepicker-loading{font-size:.75rem;color:var(--text2)}
+@media(max-width:640px){
+  .timeline-datepicker-popover{position:fixed;top:auto;bottom:8px;left:8px;right:8px;min-width:0}
+  .timeline-camfilter-popover{position:fixed;top:auto;bottom:8px;left:8px;right:8px;width:auto}
+}
+.timeline-player-placeholder{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--text2);font-size:.85rem;background:var(--bg)}
+
+/* Section 2: Event details — fills remaining space, scrollable */
+.timeline-section-events{flex:1 1 0;min-height:60px;overflow-y:auto;padding:4px 0}
+/* When video player is visible, events section should shrink */
+.timeline-section-player~.timeline-section-events{flex:0 1 auto;min-height:48px;max-height:25vh}
+
+/* Section 3: Timeline — pinned to bottom */
+/* No overflow:hidden here — the date-picker popover opens upward out of this
+   box. The .timeline-body (border-radius'd) does its own clipping, and the
+   rows scroll inside .timeline-scroll-row, so nothing needs clipping at this level. */
+.timeline-section-bottom{flex-shrink:0;display:flex;flex-direction:column;border-top:1px solid var(--border);padding-top:4px;min-height:0}
+/* Drag handle between the player and the timeline (user-resizable split). */
+.timeline-splitter{height:9px;flex-shrink:0;cursor:row-resize;display:flex;align-items:center;justify-content:center;touch-action:none}
+.timeline-splitter::before{content:'';width:38px;height:3px;border-radius:2px;background:var(--border)}
+.timeline-splitter:hover::before{background:var(--accent)}
+.timeline-nav{display:flex;align-items:center;gap:8px;padding:4px 0;justify-content:center;flex-shrink:0}
+.timeline-nav-actions{display:flex;gap:4px;position:relative}
+/* Precision-mode pill (⌘/Ctrl held over the timeline, or a touch long-press):
+   bar clicks seek to the clicked point instead of playing from the start.
+   Absolutely positioned to the right of the zoom buttons so toggling it never
+   re-centres the nav row; drops back into flow on narrow screens (below). */
+.timeline-precision-badge{position:absolute;left:calc(100% + 6px);top:50%;transform:translateY(-50%);display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:999px;border:1px solid var(--accent);background:color-mix(in srgb,var(--accent) 14%,var(--bg2));color:var(--accent);font-size:.72rem;font-weight:600;white-space:nowrap;pointer-events:none;animation:fade-in .12s ease-out}
+.timeline-date-label{font-weight:600;min-width:200px;text-align:center;text-transform:capitalize;font-size:.95rem}
+
+.timeline-detail-placeholder{justify-content:center;display:flex;align-items:center;min-height:48px}
+.timeline-detail-placeholder-text{color:var(--text2);font-size:.85rem}
+.timeline-body{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg)}
+/* Sticky time-axis ruler band (stays put while the rows scroll). */
+.timeline-ruler{display:flex;flex-shrink:0;height:28px;border-bottom:1px solid var(--border)}
+.timeline-ruler-scroll{flex:1;overflow:hidden}
+.timeline-ruler-scroll svg{display:block}
+/* The vertical scroller: sidebar labels + rows SVG scroll together.
+   align-items:flex-start is load-bearing — without it the default `stretch`
+   pins .timeline-scroll to the (bounded) container height and its overflow:hidden
+   clips the tall rows SVG to the first few rows, so labels scroll but bars don't.
+   flex-start lets both columns take their full content height instead. */
+.timeline-scroll-row{display:flex;align-items:flex-start;flex:1;min-height:0;overflow-y:auto;overflow-x:hidden}
+.timeline-sidebar{flex-shrink:0;width:100px;border-right:1px solid var(--border);background:var(--bg2)}
+.timeline-sidebar-header{flex-shrink:0;width:100px;border-right:1px solid var(--border);background:var(--bg2)}
+.timeline-label{display:flex;align-items:center;gap:6px;padding:0 8px;font-size:.75rem;color:var(--text2);border-bottom:1px solid var(--border);white-space:nowrap;overflow:hidden}
+.timeline-cam-name{overflow:hidden;text-overflow:ellipsis}
+.timeline-camera-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;display:inline-block}
+/* -webkit-touch-callout:none — a touch long-press on a bar is precision mode,
+   so iOS must not pop its callout / magnifier over it. */
+.timeline-scroll{flex:1;overflow:hidden;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.timeline-scroll svg{display:block}
+.timeline-empty{text-align:center;padding:40px;color:var(--text2)}
+.timeline-events-list{display:flex;gap:8px;align-items:stretch;position:relative}
+.timeline-detail{display:flex;gap:12px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg2);align-items:center;flex:1;min-width:0}
+.timeline-detail-active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.timeline-detail-thumb{width:120px;flex-shrink:0}
+.timeline-detail-thumb img{width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:4px;background:var(--bg3)}
+.timeline-detail-info{flex:1;display:flex;flex-direction:column;gap:6px;min-width:0;overflow:hidden}
+.timeline-detail-row{display:flex;align-items:center;gap:8px;min-width:0}
+.timeline-detail-time{font-size:.85rem;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.timeline-detail-actions{display:flex;gap:6px}
+.timeline-detail-overlap{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:.8rem}
+.timeline-overlap-label{color:var(--text2)}
+.timeline-overlap-badge{font-size:.75rem;display:inline-flex;align-items:center;gap:4px}
+
+/* Inline video player in timeline */
+.timeline-inline-player-header{display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid var(--border);flex-wrap:wrap;flex-shrink:0;position:relative}
+.timeline-inline-filename{font-size:.75rem;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
+.timeline-inline-player-header .btn-download{color:var(--text2);display:inline-flex;align-items:center;flex-shrink:0;text-decoration:none}
+.timeline-inline-player-header .btn-download:hover{color:var(--accent)}
+.timeline-player-hamburger{display:none;background:none;border:none;color:var(--text2);cursor:pointer;padding:2px}
+.timeline-player-hamburger:hover{color:var(--accent)}
+.timeline-player-dropdown{position:absolute;right:4px;top:100%;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);z-index:20;min-width:180px;box-shadow:0 4px 12px rgba(0,0,0,.3);overflow:hidden}
+.timeline-player-dropdown-item{display:flex;align-items:center;gap:6px;padding:8px 12px;font-size:.8rem;color:var(--text);text-decoration:none;cursor:default}
+.timeline-player-dropdown-item:hover{background:var(--bg3)}
+a.timeline-player-dropdown-item{cursor:pointer}
+.timeline-player-dropdown-filename{color:var(--text2);font-size:.75rem;word-break:break-all}
+
+/* Loading overlay inside timeline-body */
+.timeline-loading-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:var(--bg);z-index:5;border-radius:var(--radius)}
+
+/* Download, favorite, tags in detail cards */
+/* Detail card view icons */
+.timeline-detail-actions .btn-view-toggle{width:28px;height:28px;padding:4px;border-radius:4px;border:1px solid var(--border);background:var(--card);color:var(--text2);cursor:pointer;display:inline-flex;align-items:center;justify-content:center}
+.timeline-detail-actions .btn-view-toggle:hover{color:var(--accent);border-color:var(--accent)}
+.timeline-detail-actions .btn-view-toggle.active{color:var(--accent);border-color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent)}
+.timeline-detail-meta{display:flex;gap:4px;align-items:center}
+.btn-delete{background:rgba(0,0,0,.4);border:none;border-radius:4px;cursor:pointer;color:#fff;padding:4px 6px;display:flex;align-items:center;justify-content:center;opacity:.6}
+.btn-delete:hover{opacity:1;background:var(--danger)}
+.card-delete{position:absolute;top:4px;right:4px;z-index:2}
+.day-header{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.day-delete{display:inline-flex;align-items:center;gap:4px;color:var(--text2)}
+.day-delete:hover{color:var(--danger)}
+.modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:1000}
+.modal{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:16px;min-width:320px;max-width:480px}
+.modal h3{margin:0 0 8px;font-size:1rem}
+.modal p{margin:0 0 12px;color:var(--text2)}
+.modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
+.bulk-progress{position:relative;height:22px;background:var(--bg);border:1px solid var(--border);border-radius:6px;overflow:hidden;margin:8px 0}
+.bulk-progress-bar{position:absolute;left:0;top:0;bottom:0;background:var(--accent);transition:width .2s}
+.bulk-progress-label{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:.8rem;color:var(--text);mix-blend-mode:difference}
+
+/* Player filename & download */
+.player-filename{font-size:.75rem;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px}
+.btn-download{display:inline-flex;align-items:center;color:var(--text2);padding:4px}
+.btn-download:hover{color:var(--accent)}
+
+/* Hover tooltip */
+.timeline-tooltip{position:fixed;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:8px;z-index:60;pointer-events:none;max-width:320px;box-shadow:0 4px 12px rgba(0,0,0,.3)}
+.timeline-tooltip-time{font-size:.8rem;color:var(--text);margin-bottom:6px;font-variant-numeric:tabular-nums}
+.timeline-tooltip-thumbs{display:flex;gap:6px;flex-wrap:wrap}
+.timeline-tooltip-thumb{display:flex;flex-direction:column;align-items:center;gap:2px}
+.timeline-tooltip-thumb img{width:80px;aspect-ratio:16/9;object-fit:cover;border-radius:4px;background:var(--bg3)}
+.timeline-tooltip-thumb span{font-size:.65rem;color:var(--text2)}
+.timeline-tooltip-hint{margin-top:6px;font-size:.7rem;color:var(--text2)}
+/* Touch devices have no real hover state — the tooltip fires once on tap
+ * and lingers until the next interaction, often clipping off the left
+ * edge when the tap lands near the right side of the viewport (`position:
+ * fixed` + max-width:320px → negative left coord). Mobile users also can
+ * never hover-scrub anyway; the tooltip is pure desktop affordance. Hide
+ * it entirely on coarse-pointer devices. */
+@media (hover: none) {
+  .timeline-tooltip{display:none!important}
+}
+
+
+@media(max-width:640px){
+  .app-header{flex-wrap:nowrap;gap:4px;padding:6px 10px}
+  .header-actions{gap:4px}
+  .toolbar{padding:4px 10px;gap:4px}
+  .toolbar-count{display:none}
+  .btn-cache-label{display:none}
+  .btn-cache-all{padding:4px 6px}
+  .event-grid{grid-template-columns:1fr 1fr}
+  .player-overlay{padding:0}
+  .player-container{max-width:100%;max-height:100vh;border-radius:0;border:none}
+  .player-header{gap:6px;padding:6px 10px}
+  .player-time{order:10;flex-basis:100%;font-size:.7rem;margin:0}
+  .player-filename{display:none}
+  /* Bigger close-button tap target on touch devices — 40×40 reaches
+     the 44px-class WCAG zone once you account for surrounding spacing. */
+  .btn-close-player{width:40px;height:40px}
+  .btn-close-player svg{width:18px;height:18px}
+  .timeline-sidebar,.timeline-sidebar-header{width:60px}
+  .timeline-label{font-size:.6rem;gap:3px;padding:0 4px}
+  .timeline-camera-dot{width:6px;height:6px}
+  .timeline-events-list{flex-direction:column}
+  .timeline-detail{flex-direction:row}
+  .timeline-detail-thumb{width:100px;flex-shrink:0}
+  .timeline-detail-row{gap:4px}
+  .timeline-detail-time{font-size:.75rem}
+  .timeline-nav{flex-wrap:wrap;gap:4px}
+  .timeline-date-label{min-width:auto;font-size:.85rem}
+  /* Still absolute on narrow screens: in-flow, the badge appearing on ⌘/Ctrl
+     keydown re-wrapped the nav row and shifted the timeline mid-click, so the
+     click missed the bar. Float it just below the action buttons instead. */
+  .timeline-precision-badge{left:auto;right:0;top:calc(100% + 4px);transform:none;z-index:20}
+  .timeline-section-events{max-height:20vh}
+  .timeline-player-header-details-inline{display:none}
+  .timeline-player-hamburger{display:inline-flex}
+}
+@media(max-width:400px){
+  .event-grid{grid-template-columns:1fr}
+}
+
+/* Admin Dashboard */
+.admin-dashboard{padding:20px;width:100%;overflow-y:auto;flex:1}
+.admin-dashboard-title{font-size:1.3rem;margin:0;font-weight:600}
+.admin-dashboard-header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:20px}
+.admin-refresh-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-size:.85rem;color:var(--text2)}
+.admin-refresh-time{white-space:nowrap}
+.admin-grid{display:flex;flex-direction:column;gap:24px}
+.admin-layout{display:grid;grid-template-columns:220px minmax(0,1fr);gap:24px;align-items:start}
+.admin-body{min-width:0;display:flex;flex-direction:column;gap:24px}
+@media (max-width:720px){
+  .admin-layout{grid-template-columns:1fr;gap:12px}
+  .admin-layout .settings-nav{flex-direction:row;flex-wrap:wrap;padding:6px;gap:4px}
+  .admin-layout .settings-nav-item{flex:1 1 0;min-width:0;flex-direction:column;gap:4px;padding:8px 6px;text-align:center}
+  .admin-layout .settings-nav-icon{width:auto}
+  .admin-layout .settings-nav-label{font-size:.78rem;white-space:normal}
+}
+.admin-section{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:16px}
+.admin-section h2{font-size:1rem;margin-bottom:12px;font-weight:500}
+/* Invite codes tab */
+.invite-intro{color:var(--text2);font-size:.85rem;margin-bottom:12px;line-height:1.5}
+.invite-counters{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+.invite-counter{font-size:.8rem;color:var(--text2);background:var(--bg3);border:1px solid var(--border);border-radius:999px;padding:4px 10px}
+.invite-counter strong{color:var(--text)}
+.invite-generator{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px;margin-bottom:14px}
+.invite-generator label{display:flex;flex-direction:column;gap:4px;font-size:.8rem;color:var(--text2)}
+.invite-generator input,.invite-generator select{padding:6px 8px;border-radius:var(--radius);border:1px solid var(--border);background:var(--bg3);color:var(--text);font-size:.85rem}
+.invite-generator input[type=number]{width:80px}
+.invite-generator-note{flex:1;min-width:180px}
+.invite-generator-note input{width:100%}
+.invite-batch{border:1px solid var(--accent);border-radius:var(--radius);padding:10px 12px;margin-bottom:14px}
+.invite-batch-head{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:.85rem;margin-bottom:8px}
+.invite-batch-codes{font-family:'JetBrains Mono',monospace;font-size:.85rem;line-height:1.6;margin:0;white-space:pre;overflow-x:auto}
+.invite-bulkbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg3)}
+.invite-bulkbar-count{font-size:.8rem;color:var(--text2);margin-right:auto}
+.invite-check-col{width:32px;text-align:center}
+.invite-notice{font-size:.85rem;color:var(--text2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;margin-bottom:10px}
+.invite-filters{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.invite-filters .btn.active{border-color:var(--accent);color:var(--accent)}
+.invite-empty{color:var(--text2);font-size:.85rem}
+.invite-code-cell{font-family:'JetBrains Mono',monospace;letter-spacing:.06em;margin-right:8px}
+.invite-status{font-size:.78rem;padding:2px 8px;border-radius:999px;border:1px solid var(--border);color:var(--text2)}
+.invite-status.is-available{border-color:var(--accent);color:var(--accent)}
+.invite-status.is-revoked{border-color:var(--danger);color:var(--danger)}
+/* Changelog tab — markdown rendered from CHANGELOG.md. Typography mirrors
+   the public legal pages (Terms / Privacy) but swapped onto the admin
+   theme variables. Selectors are written as .admin-section.admin-changelog
+   on the elements that fight the generic .admin-section rules above
+   (padding, h2) so cascade order doesn't matter. */
+.admin-section.admin-changelog{padding:28px 32px;max-width:860px;line-height:1.6}
+.admin-changelog-meta{font-family:'JetBrains Mono',monospace;font-size:.7rem;color:var(--text2);margin:0 0 22px;letter-spacing:.5px;text-transform:uppercase}
+.admin-changelog-meta time{color:var(--text)}
+.admin-changelog h1{font-size:1.6rem;font-weight:700;letter-spacing:-.6px;margin:0 0 10px;color:var(--text)}
+.admin-changelog h1+p{color:var(--text2);font-size:.88rem;line-height:1.65;margin:0 0 8px}
+.admin-section.admin-changelog h2{font-family:'JetBrains Mono',monospace;font-size:.95rem;font-weight:600;margin:32px 0 10px;padding-top:20px;border-top:1px solid var(--border);color:var(--accent);font-variant-numeric:tabular-nums;letter-spacing:0}
+.admin-section.admin-changelog h2:first-of-type{border-top:none;padding-top:8px;margin-top:24px}
+.admin-changelog p{color:var(--text2);font-size:.88rem;line-height:1.65;margin:8px 0}
+/* Section labels (rendered as <p><strong>…</strong></p>). Both kinds wear
+   a pill: features in mint, bugfixes in coral. The shared base class
+   keeps the geometry identical so the two read as a category pair, not
+   as a foreground/background split. Bullet rows stay asymmetric (feature
+   bullets slightly brighter) — that's a separate signal. */
+.admin-changelog-label{display:inline-block;text-transform:uppercase;letter-spacing:.7px;font-weight:700;font-size:.78rem;padding:3px 12px;border-radius:999px;margin:6px 0 2px}
+.admin-changelog-label--feature{color:var(--accent);background:rgba(110,231,183,.10);border:1px solid rgba(110,231,183,.35)}
+.admin-changelog-label--bugfix{color:#ff9b9b;background:rgba(255,120,120,.08);border:1px solid rgba(255,120,120,.30)}
+/* Bullets following a Features label are slightly brighter than bullets
+   following Bugfixes — same prominence asymmetry as before. */
+.admin-changelog p:has(.admin-changelog-label--feature)+ul li{color:var(--text)}
+.admin-changelog p:has(.admin-changelog-label--bugfix)+ul li{color:var(--text2)}
+/* Embedded screenshots (one per frontend-touching bullet, generated by
+   /deploy Phase 1.5). display:block keeps them on their own line inside
+   the <li> continuation paragraph; max-height caps full-page fallbacks
+   so a runaway screenshot can't eat the column. */
+.admin-changelog-img{display:block;max-width:100%;width:auto;max-height:420px;margin:8px 0 14px;border:1px solid var(--border);border-radius:6px;background:var(--bg2)}
+/* Fallback for any other inline <strong> in the markdown body. */
+.admin-changelog p strong:not(.admin-changelog-label){color:var(--text);font-weight:600}
+.admin-changelog ul{padding-left:22px;margin:6px 0 14px;color:var(--text2);font-size:.88rem}
+.admin-changelog li{margin-bottom:5px;line-height:1.55}
+.admin-changelog li::marker{color:var(--text2)}
+.admin-changelog code{font-family:'JetBrains Mono',monospace;font-size:.78rem;background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:1px 5px;color:var(--text)}
+.admin-changelog em{font-style:italic;color:var(--text2)}
+.admin-changelog a{color:var(--accent);text-decoration:none}
+.admin-changelog a:hover{text-decoration:underline}
+/* Tiptap editor + email preview share rich-text styling. Global `*` reset
+   zeroes ul/ol padding-left, which puts bullets outside the editor box —
+   restore typical list indent here. */
+.email-rich-text{line-height:1.55}
+.email-rich-text ul,.email-rich-text ol{padding-left:1.5em;margin:.4em 0}
+.email-rich-text li{margin:.15em 0}
+.email-rich-text li>p{margin:0}
+.email-rich-text p{margin:.4em 0}
+.email-rich-text p:first-child{margin-top:0}
+.email-rich-text p:last-child{margin-bottom:0}
+.email-rich-text h2,.email-rich-text h3{margin:.6em 0 .3em;font-weight:600}
+.email-rich-text h2{font-size:1.15rem}
+.email-rich-text h3{font-size:1rem}
+.email-rich-text blockquote{border-left:3px solid var(--border);padding-left:.8em;margin:.4em 0;color:var(--text2)}
+.email-rich-text a{color:var(--accent);text-decoration:underline}
+.email-rich-text .ProseMirror{outline:none;min-height:180px}
+.email-rich-text .ProseMirror:focus{outline:none}
+.plan-select{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:3px 6px;color:var(--text);font-size:.8rem}
+.bans-cell{position:relative}
+.bans-popover{position:absolute;top:100%;right:0;z-index:20;margin-top:4px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.25);padding:10px;min-width:280px;max-width:420px}
+.bans-list{list-style:none;padding:0;margin:0 0 8px;display:flex;flex-direction:column;gap:6px}
+.bans-list-item{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:.85rem;padding:6px 8px;background:var(--bg3);border-radius:8px}
+.ban-type{font-weight:600;font-size:.7rem;letter-spacing:.04em;text-transform:uppercase;padding:2px 8px;border-radius:6px;background:var(--bg);color:var(--text2)}
+.ban-type-manual{background:rgba(220,53,69,.15);color:#dc3545}
+.ban-type-lockout{background:rgba(245,159,0,.15);color:#f59f00}
+.ban-expires{color:var(--text2)}
+.ban-reason{color:var(--text2);font-style:italic;flex-basis:100%}
+.bans-list-item .btn{margin-left:auto}
+.text-muted{color:var(--text2)}
+.storage-table{width:100%;border-collapse:collapse;font-size:.85rem;margin-bottom:12px}
+.storage-table td{padding:4px 8px}
+.storage-table td:first-child{color:var(--text2)}
+.storage-value{text-align:right;font-variant-numeric:tabular-nums}
+.storage-value-warn{color:#f59f00;font-weight:600}
+
+/* Edit mode — a deliberate, visually loud state so the user always knows
+   delete-capable buttons are live. */
+.btn-edit-mode{display:inline-flex;align-items:center;gap:6px}
+.btn-edit-mode.active{background:#d73a49;border-color:#d73a49;color:#fff}
+.btn-edit-mode.active:hover{background:#cb2431}
+.edit-mode-banner{display:flex;align-items:center;gap:8px;padding:8px 14px;background:rgba(215,58,73,.12);border-left:3px solid #d73a49;color:#d73a49;font-size:.85rem;font-weight:500;margin:8px 0}
+.event-list-edit{outline:2px solid rgba(215,58,73,.35);outline-offset:-2px;border-radius:4px}
+.day-select{display:inline-flex;align-items:center;cursor:pointer;margin-right:6px}
+.day-select input[type=checkbox]{width:16px;height:16px;cursor:pointer;accent-color:#d73a49}
+.day-header-selected{background:rgba(215,58,73,.08);border-left:3px solid #d73a49;padding-left:8px}
+.btn-delete-selected{display:inline-flex;align-items:center;gap:6px}
+.storage-bar-wrapper{display:flex;align-items:center;gap:8px}
+.storage-bar{flex:1;height:8px;background:var(--bg3);border-radius:4px;overflow:hidden}
+.storage-bar-fill{height:100%;background:var(--accent);border-radius:4px;transition:width .3s}
+.storage-bar-label{font-size:.75rem;color:var(--text2);min-width:36px;text-align:right}
+
+/* Change Password Modal */
+.change-password-modal{max-width:420px}
+.change-password-form{padding:16px}
+.password-setup-banner{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px;background:var(--bg3);border-bottom:1px solid var(--border);flex-wrap:wrap}
+.password-setup-banner__text{font-size:.875rem;color:var(--text)}
+.password-setup-banner__actions{display:flex;gap:8px;flex-shrink:0}
+.btn-ghost{background:none;border-color:transparent;color:var(--text2)}
+@media(hover:hover){.btn-ghost:hover:not(:disabled){background:var(--bg3);border-color:var(--border);color:var(--text)}}
+.form-group{margin-bottom:12px}
+.form-group label{display:block;font-size:.85rem;color:var(--text2);margin-bottom:4px}
+.form-group input{width:100%}
+.password-hint{font-size:.75rem;margin:8px 0 12px;color:var(--text2)}
+.success-message{padding:24px 16px;text-align:center;color:var(--success);font-weight:500}
+
+/* Number inputs in plan forms */
+input[type="number"]{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:4px 8px;color:var(--text);outline:none;width:80px}
+input[type="number"]:focus{border-color:var(--accent)}
+
+/* Usage bars */
+:root,[data-theme="dark"]{
+  --usage-green:#38a169;--usage-yellow:#d69e2e;--usage-orange:#dd6b20;--usage-red:#e53e3e;
+}
+[data-theme="light"]{
+  --usage-green:#38a169;--usage-yellow:#d69e2e;--usage-orange:#dd6b20;--usage-red:#e53e3e;
+}
+.processing-status{margin:8px 16px;padding:8px 12px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);font-size:.85rem;color:var(--text)}
+.processing-status-inprogress{display:flex;align-items:center;gap:8px;color:var(--text2);background:none;border:0;padding:0;margin:0;font:inherit;text-align:left;width:100%;cursor:pointer}
+.processing-status-inprogress:disabled{cursor:default}
+.processing-status-inprogress:not(:disabled):hover{color:var(--text)}
+.processing-status-inprogress:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:var(--radius)}
+.processing-status-label{flex:1}
+.processing-status-chevron{display:inline-block;font-size:1rem;color:var(--text2);transition:transform .15s ease}
+.processing-status-chevron.is-open{transform:rotate(180deg)}
+.processing-status-spinner{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--accent);animation:processing-pulse 1.2s ease-in-out infinite}
+@keyframes processing-pulse{0%,100%{opacity:.3}50%{opacity:1}}
+.processing-status-files{list-style:none;margin:6px 0 0;padding:6px;background:var(--bg3);border-radius:var(--radius);max-height:200px;overflow-y:auto;display:flex;flex-direction:column;gap:2px}
+.processing-status-file{font-family:monospace;font-size:.8rem;color:var(--text);padding:2px 4px;word-break:break-all}
+.processing-status-file-name{display:block}
+.processing-status-file-more{font-family:inherit;color:var(--text2);font-style:italic;padding-top:4px;border-top:1px solid var(--border);margin-top:2px}
+
+.usage-bar-container{margin:4px 0}
+.usage-bar-header{display:flex;justify-content:space-between;font-size:.75rem;margin-bottom:2px}
+.usage-bar-label{font-weight:500;color:var(--text)}
+.usage-bar-values{color:var(--text2)}
+.usage-bar-track{height:6px;background:var(--bg3);border-radius:3px;overflow:hidden}
+.usage-bar-fill{height:100%;border-radius:3px;transition:width .3s ease}
+.usage-bar-footer{display:flex;justify-content:space-between;font-size:.7rem;color:var(--text2);margin-top:1px}
+.usage-bar-percent{font-weight:500}
+.usage-bar-reset{font-style:italic}
+
+/* Dropdown usage section */
+.dropdown-usage{padding:8px 12px;border-bottom:1px solid var(--border)}
+.usage-warning{font-size:.75rem;color:var(--danger);padding:4px 0;font-weight:500}
+
+/* Admin usage table */
+.usage-table td{vertical-align:middle}
+.usage-table td:nth-child(3),.usage-table td:nth-child(4){min-width:140px}
+.usage-totals{display:flex;gap:16px;flex-wrap:wrap;font-size:.85rem;color:var(--text2);margin-bottom:12px}
+.usage-totals span{padding:2px 8px;background:var(--bg3);border-radius:var(--radius)}
+
+/* Settings page */
+/* width:min(...) + box-sizing:border-box pin the page to the same horizontal
+   extent on every tab — without it the grid below shrinks to fit content and
+   the whole layout jumps as the body switches between (narrow) Display copy
+   and (wider) Cameras table. */
+.settings-page{padding:20px 24px 32px;width:min(1100px,100%);margin:0 auto;box-sizing:border-box}
+.settings-header{display:flex;align-items:center;gap:14px;margin-bottom:20px}
+.settings-header h2{margin:0;font-size:1.4rem;font-weight:600;letter-spacing:-.01em}
+.settings-back-btn{display:inline-flex;align-items:center;gap:6px}
+/* `minmax(0, 1fr)` (vs plain `1fr`) lets the body track shrink below its
+   content's natural width, which is what we want — wide tables get scroll
+   inside the body, the body itself stays the same width every tab. */
+.settings-layout{display:grid;grid-template-columns:220px minmax(0,1fr);gap:24px;align-items:start}
+.settings-nav{display:flex;flex-direction:column;gap:2px;background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:8px}
+.settings-nav-item{display:flex;align-items:center;gap:12px;width:100%;padding:10px 14px;background:transparent;border:none;border-radius:8px;color:var(--text);font:inherit;font-size:.95rem;text-align:left;text-decoration:none;cursor:pointer;transition:background .12s ease,color .12s ease}
+.settings-nav-item:hover{background:var(--bg3)}
+.settings-nav-item.active{background:var(--accent);color:#fff}
+.settings-nav-item.active .settings-nav-icon{color:#fff}
+.settings-nav-icon{display:inline-flex;align-items:center;justify-content:center;width:20px;color:var(--text2);flex:none}
+.settings-nav-label{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.settings-body{min-height:280px;background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:24px;overflow-x:auto}
+.settings-section{display:flex;flex-direction:column;gap:10px}
+.settings-section + .settings-section{margin-top:24px;padding-top:24px;border-top:1px solid var(--border)}
+.settings-row{display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none;font-size:.95rem}
+.settings-row input[type="checkbox"]{width:16px;height:16px;flex:none;cursor:pointer}
+/* Inputs inside a settings row inherit the row's font-size + line-height
+   so the label "Theme" and the dropdown next to it sit at the same scale. */
+.settings-row select,
+.settings-row input[type="text"],
+.settings-row input[type="email"],
+.settings-row input[type="number"]{font:inherit;font-size:.95rem;padding:5px 9px}
+/* Native <option> elements ignore the parent <select>'s background/color in
+   most browsers — they inherit the OS dropdown chrome. Setting them
+   explicitly here pins legibility in dark mode (Chrome/Firefox honour these
+   rules; Safari falls back to system colors which still pick up our
+   color-scheme media). */
+.settings-row select{background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:6px}
+/* A <select> is sized by its widest <option>, and a flex item defaults to
+   min-width:auto — so it refuses to shrink below that intrinsic width. The
+   Timezone row (Intl.supportedValuesOf('timeZone'), widest entry
+   "America/Argentina/Buenos_Aires") therefore rendered 60px past the right
+   edge on a 390px viewport, putting its dropdown chevron off-screen.
+   min-width:0 restores shrinking; max-width caps it at the row; ellipsis
+   keeps the selected value readable once narrowed. */
+.settings-row select{min-width:0;max-width:100%;text-overflow:ellipsis}
+.settings-row select option{background-color:var(--bg2);color:var(--text)}
+.settings-row-label{flex:1}
+.settings-empty,.settings-error{padding:12px;color:var(--text2)}
+.settings-error{color:var(--danger)}
+/* The 4-column table's intrinsic width exceeds a 390px viewport, and the
+   settings page clips rather than scrolls — so the rightmost "Events"
+   column was cut off. Camera names and localised headers are unbounded,
+   so this scroll container is the only width-independent guarantee that
+   no column is ever unreachable; the tightened mobile padding below keeps
+   it from actually needing to scroll at typical widths. */
+.cameras-table-wrap{overflow-x:auto}
+.cameras-table{width:100%;border-collapse:collapse}
+.cameras-table th,.cameras-table td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border)}
+.cameras-table th{font-weight:600;font-size:.85rem;color:var(--text2)}
+.cameras-row-clickable{cursor:pointer;transition:background .12s ease}
+.cameras-row-clickable:hover{background:var(--bg3)}
+.cameras-table select{background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:3px 6px;font-size:.85rem;cursor:pointer}
+.settings-storage{padding:4px 0;display:flex;flex-direction:column;gap:16px}
+
+/* iOS-style pill toggle. The label wraps a native <input type="checkbox">
+   so keyboard, focus, and form semantics keep working — only the
+   <input> itself is restyled to a 51×31 pill via appearance:none +
+   pseudo-elements. Used everywhere that has `<label class="settings-toggle">`:
+   StorageSection, CameraProfilesSection, AdminDashboard, FtpsPasswordSection,
+   FtpsPasswordModal, PasskeySetupModal — all share this single rule. */
+.settings-toggle{display:flex;align-items:center;gap:10px;cursor:pointer;font-size:.95rem}
+.settings-toggle input[type="checkbox"]{
+  appearance:none;-webkit-appearance:none;
+  width:42px;height:26px;border-radius:99px;
+  background:var(--bg3);border:1px solid var(--border);
+  position:relative;cursor:pointer;flex:none;margin:0;
+  transition:background 150ms ease,border-color 150ms ease;
+}
+.settings-toggle input[type="checkbox"]::after{
+  content:"";position:absolute;top:2px;left:2px;
+  width:20px;height:20px;border-radius:99px;
+  background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);
+  transition:transform 150ms ease;
+}
+.settings-toggle input[type="checkbox"]:checked{background:var(--accent);border-color:transparent}
+.settings-toggle input[type="checkbox"]:checked::after{transform:translateX(16px)}
+.settings-toggle input[type="checkbox"]:disabled{opacity:.5;cursor:not-allowed}
+.settings-toggle input[type="checkbox"]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.settings-toggle-label{flex:1;min-width:0}
+
+/* Segmented control — replaces a <select> for 2-4 mutually-exclusive
+   options. Used in SettingsPage for the Theme picker (Auto/Light/Dark)
+   so the choice is one tap, not a dropdown round-trip. */
+.settings-segmented{
+  display:inline-flex;background:var(--bg3);border:1px solid var(--border);
+  border-radius:8px;padding:2px;flex:none;
+}
+.settings-segmented button{
+  appearance:none;border:0;background:transparent;color:var(--text2);
+  font:inherit;font-size:.85rem;font-weight:500;
+  padding:6px 12px;border-radius:6px;cursor:pointer;
+  transition:background 120ms ease,color 120ms ease;
+}
+.settings-segmented button:hover:not(.on){color:var(--text)}
+.settings-segmented button.on{
+  background:var(--bg2);color:var(--text);
+  box-shadow:0 1px 2px rgba(0,0,0,.18);
+}
+.settings-segmented button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* Stepper (− N +) — replaces a tiny <input type="number"> for bounded
+   numeric values. Used by StorageSection for the retention-days field. */
+.settings-stepper{
+  display:inline-flex;align-items:stretch;border:1px solid var(--border);
+  border-radius:8px;overflow:hidden;background:var(--bg3);flex:none;
+}
+.settings-stepper button{
+  appearance:none;border:0;background:transparent;color:var(--text);
+  width:30px;height:30px;font-size:1rem;font-weight:600;cursor:pointer;line-height:1;
+  transition:background 120ms ease;
+}
+.settings-stepper button:hover:not(:disabled){background:rgba(255,255,255,.06)}
+.settings-stepper button:disabled{opacity:.4;cursor:not-allowed}
+.settings-stepper .settings-stepper-val{
+  min-width:44px;text-align:center;font-family:var(--font-mono,ui-monospace,'JetBrains Mono','SF Mono',Menlo,monospace);
+  font-size:.85rem;color:var(--text);height:30px;line-height:30px;padding:0 6px;
+  border-left:1px solid var(--border);border-right:1px solid var(--border);
+  user-select:none;
+}
+
+/* Per-camera storage breakdown — rendered in StorageSection under the
+   total disk usage bar. Stacked bar (segments per camera) + per-camera
+   rows with a colored dot, GB size, mini progress bar (relative to the
+   biggest camera), and recorded-hours label. Camera colors come from
+   lib/cameraColors → CSS var --cam-color set inline per row. */
+.settings-storage-breakdown{
+  background:var(--bg);border:1px solid var(--border);border-radius:12px;
+  padding:16px;margin-top:4px;
+}
+.settings-storage-breakdown-header{
+  display:flex;align-items:baseline;justify-content:space-between;
+  gap:12px;margin-bottom:10px;
+}
+.settings-storage-breakdown-title{
+  font:700 .7rem/1 var(--font-mono,ui-monospace,'JetBrains Mono',Menlo,monospace);
+  letter-spacing:.08em;text-transform:uppercase;color:var(--text2);
+}
+.settings-storage-breakdown-summary{font-size:.78rem;color:var(--text2)}
+.settings-storage-stack{
+  display:flex;height:12px;border-radius:99px;overflow:hidden;
+  background:var(--bg3);margin-bottom:14px;
+}
+.settings-storage-stack > div{height:100%;transition:width 200ms ease;min-width:1px}
+.settings-storage-free{background:var(--bg3)}
+.settings-storage-cams{display:flex;flex-direction:column;gap:14px}
+.settings-storage-cam-row{display:flex;flex-direction:column;gap:6px}
+.settings-storage-cam-head{display:flex;align-items:center;gap:10px}
+.settings-storage-cam-dot{
+  width:10px;height:10px;border-radius:99px;
+  background:var(--cam-color,var(--text2));flex:none;
+}
+.settings-storage-cam-name{flex:1;font-size:.92rem;font-weight:500;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.settings-storage-cam-size{
+  font:500 .82rem/1 var(--font-mono,ui-monospace,'JetBrains Mono',Menlo,monospace);
+  color:var(--text);
+}
+.settings-storage-cam-bar{height:4px;border-radius:99px;background:var(--bg3);overflow:hidden}
+.settings-storage-cam-bar > div{height:100%;background:var(--cam-color,var(--text2));border-radius:99px;transition:width 200ms ease}
+.settings-storage-cam-foot{
+  display:flex;justify-content:space-between;
+  font:500 .72rem/1 var(--font-mono,ui-monospace,'JetBrains Mono',Menlo,monospace);
+  color:var(--text2);
+}
+.settings-storage-breakdown-empty{padding:16px 8px;text-align:center;color:var(--text2);font-size:.88rem}
+
+.settings-hint{font-size:.85rem;color:var(--text2);margin:0;line-height:1.5}
+@media (max-width:720px){
+  /* Mobile Settings: stack the nav above the body and turn it into an
+     equal-width segmented control rather than a left-right scroll strip
+     (which felt unfinished on touch). Each tab sticks to itself, the
+     group fills the width, and the active pill mirrors desktop. */
+  .settings-layout{grid-template-columns:1fr;gap:12px}
+  /* Trim cell padding and drop the data cells to the header's .85rem so
+     all four columns fit a 390px viewport without engaging the
+     .cameras-table-wrap scroll. The wrapper still catches long camera
+     names and wider locales — this just keeps the common case scroll-free. */
+  .cameras-table th,.cameras-table td{padding:8px 6px;font-size:.85rem}
+  .settings-nav{
+    flex-direction:row;
+    padding:4px;
+    gap:4px;
+    overflow:hidden;
+  }
+  .settings-nav-item{
+    flex:1 1 0;
+    min-width:0;
+    flex-direction:column;
+    justify-content:center;
+    align-items:center;
+    text-align:center;
+    gap:4px;
+    /* 4px (was 6px) buys each label ~4px of text width — enough for
+       "Cameras" (53px) to stop ellipsing inside a 51px box. */
+    padding:8px 4px;
+  }
+  .settings-nav-icon{width:auto}
+  /* Five pills at 390px leave ~63px each, so nowrap+ellipsis cut the
+     longer labels down to meaningless stubs ("MCP Clients" → "MCP …").
+     Wrap instead of truncating: multi-word labels fold onto a second
+     line and stay fully readable. This is deliberately language-neutral
+     — abbreviating would need mobile-only keys in all 8 locales, and the
+     labels differ wildly ("Almacenamiento", "Archiviazione", "Klienci
+     MCP", "mIllogh HablI'"). overflow-wrap:anywhere is the backstop for
+     locales whose label is one long unbreakable word (es
+     "Almacenamiento" breaks across two lines rather than losing its
+     tail). Still no hyphens:auto: <html lang> now tracks the active
+     language (see i18n/index.ts), but per-locale hyphenation is unverified
+     and tlh has no dictionary — don't re-add it without checking each
+     locale hyphenates correctly. The admin sidebar already wraps these
+     same pills (see
+     .admin-layout above). Items stretch to equal heights, so a 2-line
+     pill doesn't skew the row. */
+  .settings-nav-label{
+    font-size:.78rem;
+    width:100%;
+    text-align:center;
+    white-space:normal;
+    overflow-wrap:anywhere;
+  }
+}
+
+/* 404 page */
+.not-found-page{display:flex;justify-content:center;align-items:center;min-height:100vh;padding:24px}
+.not-found-card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:48px 40px;text-align:center;max-width:480px}
+.not-found-code{font-size:96px;font-weight:700;color:var(--accent,#6EE7B7);line-height:1;letter-spacing:-3px;margin-bottom:4px}
+.not-found-title{font-size:1.4rem;margin:0 0 10px}
+.not-found-body{color:var(--text2);margin:0 0 24px}
+
+/* Empty recordings */
+.empty-recordings{display:flex;justify-content:center;padding:60px 20px}
+.empty-recordings-card{text-align:center;max-width:420px;color:var(--text2)}
+.empty-recordings-card svg{color:var(--text2);opacity:.6;margin-bottom:12px}
+.empty-recordings-title{font-size:1.1rem;color:var(--text);margin:0 0 8px}
+.empty-recordings-body{margin:0;font-size:.9rem;line-height:1.5}
+.empty-recordings-clear{margin-top:16px}
+/* Camera FTP settings under the first-time message */
+.camera-connect{margin-top:22px;padding:14px 16px;text-align:left;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius)}
+.camera-connect-title{margin:0 0 10px;font-size:.9rem;font-weight:600;color:var(--text)}
+.camera-connect-list{margin:0;display:flex;flex-direction:column;gap:8px}
+.camera-connect-row{display:flex;align-items:baseline;gap:12px}
+.camera-connect-row dt{flex:0 0 7rem;overflow-wrap:anywhere;font-size:.78rem;color:var(--text2)}
+.camera-connect-row dd{flex:1;min-width:0;margin:0;display:flex;align-items:center;justify-content:space-between;gap:8px}
+.camera-connect-value{min-width:0;overflow-wrap:anywhere;font-size:.85rem;line-height:1.4;color:var(--text)}
+.camera-connect-mono{font-family:var(--font-mono,ui-monospace,'JetBrains Mono','SF Mono',Menlo,monospace)}
+.camera-connect-copy{flex:0 0 auto}
+.camera-connect-status{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.camera-connect-hint{margin:12px 0 0;font-size:.78rem;line-height:1.45}
+@media (max-width:480px){
+  .camera-connect-row{flex-direction:column;align-items:stretch;gap:2px}
+  .camera-connect-row dt{flex:none}
+}
+
+
+/* Cookie consent banner — fixed at bottom, dismissible only by Accept/Reject */
+/* `color` is set explicitly rather than inherited from body: body resolves
+   var(--text) against the root, and an inherited colour arrives as an
+   already-computed value, so a subtree that re-points --text (see the
+   marketing override below) would keep the root's text colour. */
+.cookie-banner{position:fixed;left:12px;right:12px;bottom:12px;z-index:9999;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.4);padding:16px 20px}
+.cookie-banner-inner{display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:20px;max-width:1200px;margin:0 auto}
+.cookie-banner-text{flex:1 1 auto;min-width:0}
+.cookie-banner-text strong{display:block;font-size:.95rem;margin-bottom:4px}
+.cookie-banner-text p{margin:0;font-size:.85rem;color:var(--text2);line-height:1.4}
+.cookie-banner-link{margin-top:6px!important}
+.cookie-banner-link a{color:var(--accent,#6EE7B7);text-decoration:underline}
+.cookie-banner-actions{display:flex;flex-direction:row;gap:8px;flex-shrink:0}
+.cookie-banner-btn{padding:8px 16px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--text);cursor:pointer;font-size:.85rem;font-weight:500;transition:all .15s}
+.cookie-banner-btn:hover{border-color:var(--accent);color:var(--accent)}
+/* --on-accent, not a hardcoded near-black: the light theme's accent is blue
+   (#2563eb), and #06070C on it lands at ~3.3:1 — under WCAG AA. */
+.cookie-banner-accept{background:var(--accent,#6EE7B7);color:var(--on-accent,#06070C);border-color:var(--accent,#6EE7B7)}
+.cookie-banner-accept:hover{filter:brightness(1.1);border-color:var(--accent);color:var(--on-accent,#06070C)}
+/* The marketing surface is dark-only, but this banner mounts at the app root
+   and so picks up the app's theme-aware tokens: a visitor whose OS is in
+   light mode got a white card with a blue button sitting on the black
+   landing. While a marketing page is on screen, re-point the tokens these
+   rules already read at the marketing palette — no rule below changes. */
+html:has(.public-layout) .cookie-banner{
+  --bg2:var(--public-bg-2);
+  --border:var(--public-border);
+  --text:var(--public-text);
+  --text2:var(--public-text-soft);
+  --accent:var(--public-accent);
+  --on-accent:var(--public-bg);
+}
+@media (max-width:600px){
+  .cookie-banner{left:6px;right:6px;bottom:6px;padding:12px 14px}
+  .cookie-banner-inner{flex-direction:column;align-items:stretch;gap:12px}
+  .cookie-banner-actions{flex-direction:row;justify-content:stretch}
+  .cookie-banner-actions .cookie-banner-btn{flex:1 1 0}
+}
+
+
+/* Registration consent checkboxes — F1+F2 (legal compliance) */
+.register-consent{display:flex;align-items:flex-start;gap:8px;font-size:.85rem;color:var(--text);text-align:left;margin:4px 0;cursor:pointer;line-height:1.4}
+.register-consent input[type=checkbox]{margin-top:2px;flex-shrink:0;cursor:pointer}
+.register-consent a{color:var(--accent,#6EE7B7);text-decoration:underline}
+.register-consent-optional{color:var(--text2);font-size:.8rem}
+
+
+/* Per-user storage breakdown — admin User Management expand row.
+   Mirrors docs/storage-viz-preview.html: 12px stacked bar with djb2-coloured
+   segments per camera, plus per-camera rows with a dot, name, GB readout,
+   4px relative bar, and an hours-recorded footer. */
+.storage-breakdown{padding:12px 16px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;margin:6px 0}
+.storage-breakdown-empty{color:var(--text2);font-size:.85rem;font-style:italic}
+.storage-breakdown-stack{display:flex;height:12px;border-radius:99px;overflow:hidden;margin-bottom:14px;background:var(--bg3)}
+.storage-breakdown-stack-segment{height:100%;transition:width 200ms ease}
+.storage-breakdown-stack-segment + .storage-breakdown-stack-segment{box-shadow:-1px 0 0 0 var(--bg2)}
+.storage-breakdown-row{padding:10px 0;border-top:1px solid var(--border)}
+.storage-breakdown-row:first-child{border-top:none}
+.storage-breakdown-row-head{display:flex;align-items:center;gap:10px}
+.storage-breakdown-dot{width:8px;height:8px;border-radius:99px;flex-shrink:0}
+.storage-breakdown-name{font-size:.9rem;font-weight:600;color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.storage-breakdown-size{font:500 .85rem/1 ui-monospace,"JetBrains Mono","SF Mono",Menlo,monospace;color:var(--text)}
+.storage-breakdown-row-bar{margin-top:6px;height:4px;border-radius:99px;background:var(--bg3);overflow:hidden}
+.storage-breakdown-row-bar > div{height:100%;border-radius:99px;transition:width 200ms ease}
+.storage-breakdown-row-foot{margin-top:5px;display:flex;justify-content:space-between;font:500 .7rem/1 ui-monospace,"JetBrains Mono","SF Mono",Menlo,monospace;color:var(--text2)}
+
+/* Expand chevron in the disk-usage cell. Rotates 90deg when expanded. */
+.storage-expand-btn{padding:2px 4px;background:none;border:none;color:var(--text2);cursor:pointer;display:inline-flex;align-items:center;transition:transform 150ms ease,color 150ms ease;flex-shrink:0}
+.storage-expand-btn:hover{color:var(--accent)}
+.storage-expand-btn.is-expanded{transform:rotate(90deg);color:var(--accent)}
+.storage-expand-cell{display:flex;align-items:center;gap:6px}
+.storage-expand-cell > .usage-bar-container{flex:1;min-width:0}
+
+/* Toast — non-blocking replacement for window.alert(). Bottom-centered, auto-dismisses. */
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:1000;
+  display:flex;align-items:center;gap:12px;max-width:min(560px,calc(100vw - 32px));
+  padding:10px 14px;border-radius:var(--radius);background:var(--bg2);color:var(--text);
+  border:1px solid var(--border);box-shadow:0 8px 24px rgba(0,0,0,.35);
+  font:500 .9rem/1.4 inherit;animation:toast-in 180ms ease-out}
+.toast-error{border-left:3px solid var(--danger)}
+.toast-warn{border-left:3px solid var(--usage-yellow)}
+/* Rate-limit countdown rides above the ordinary action toast so the two
+   don't stack on top of each other on the rare frame they coincide. */
+.toast-countdown{bottom:5rem}
+.toast-msg{flex:1;min-width:0}
+.toast-close{background:none;border:none;color:var(--text2);font-size:1.2rem;line-height:1;
+  cursor:pointer;padding:2px 6px;border-radius:4px}
+.toast-close:hover{color:var(--text);background:var(--bg3)}
+@keyframes toast-in{from{opacity:0;transform:translate(-50%,8px)}to{opacity:1;transform:translate(-50%,0)}}

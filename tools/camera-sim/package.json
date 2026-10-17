@@ -1,0 +1,15 @@
+{
+  "name": "clipnest-camera-sim",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Local stress-test harness that simulates N Reolink-style cameras uploading to the Clipnest FTPS server over explicit TLS.",
+  "type": "module",
+  "main": "simulate.js",
+  "scripts": {
+    "start": "node simulate.js",
+    "dev": "node simulate.js --host 127.0.0.1 --port 21 --cameras 3 --interval-ms 10000 --insecure"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

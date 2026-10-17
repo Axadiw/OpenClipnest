@@ -1,0 +1,144 @@
+name: CLA
+
+# Checks that everyone who authored commits in a pull request has signed the
+# contributor licence agreement (CLA.md), and records signatures.
+#
+# Signatures live in `signatures.json` on the `cla-signatures` branch of this
+# repository. To keep them in a separate private repository instead, set the
+# repository variable CLA_SIGNATURES_REPO ("owner/name") and the secret
+# CLA_SIGNATURES_TOKEN (a token with contents:write on that repository).
+#
+# This workflow runs with write permissions on pull requests from forks, so
+# it must never check out or execute code from the pull request.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  statuses: write
+
+concurrency:
+  group: cla-${{ github.event.pull_request.number || github.event.issue.number }}
+
+jobs:
+  cla:
+    if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          CLA_VERSION: "2"
+          SIGN_PHRASE: "I have read the CLA Document and I hereby sign the CLA"
+          SIGNATURES_REPO: ${{ vars.CLA_SIGNATURES_REPO }}
+          SIGNATURES_TOKEN: ${{ secrets.CLA_SIGNATURES_TOKEN }}
+          # Accounts that never need to sign: the owner, automation, and
+          # `claude` (Claude Code working for the owner).
+          #
+          # Exemption goes by GitHub login, and a commit's login is derived
+          # from its author e-mail. Anyone can author a commit as
+          # noreply@anthropic.com, and GitHub then attributes it to `claude`,
+          # so this check passes for it without a signature. Review a pull
+          # request with such commits as an outside contribution, and merge
+          # it only when it really is the owner's own Claude Code work.
+          EXEMPT: "dependabot[bot],github-actions[bot],claude"
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request?.number ?? context.payload.issue.number;
+            const VERSION = process.env.CLA_VERSION;
+            const PHRASE = process.env.SIGN_PHRASE.toLowerCase();
+            const exempt = new Set([owner.toLowerCase(), ...process.env.EXEMPT.toLowerCase().split(',')]);
+
+            // Where signatures are stored.
+            const external = process.env.SIGNATURES_REPO && process.env.SIGNATURES_TOKEN;
+            const store = external
+              ? { gh: require('@actions/github').getOctokit(process.env.SIGNATURES_TOKEN),
+                  owner: process.env.SIGNATURES_REPO.split('/')[0], repo: process.env.SIGNATURES_REPO.split('/')[1], ref: undefined }
+              : { gh: github, owner, repo, ref: 'cla-signatures' };
+            const FILE = 'signatures.json';
+
+            async function ensureBranch() {
+              if (!store.ref) return;
+              try { await store.gh.rest.git.getRef({ owner: store.owner, repo: store.repo, ref: `heads/${store.ref}` }); return; } catch (e) { if (e.status !== 404) throw e; }
+              // Orphan branch holding only the signatures file.
+              const blob = await store.gh.rest.git.createBlob({ owner: store.owner, repo: store.repo, content: '[]\n', encoding: 'utf-8' });
+              const tree = await store.gh.rest.git.createTree({ owner: store.owner, repo: store.repo, tree: [{ path: FILE, mode: '100644', type: 'blob', sha: blob.data.sha }] });
+              const commit = await store.gh.rest.git.createCommit({ owner: store.owner, repo: store.repo, message: 'Start CLA signatures', tree: tree.data.sha, parents: [] });
+              await store.gh.rest.git.createRef({ owner: store.owner, repo: store.repo, ref: `refs/heads/${store.ref}`, sha: commit.data.sha });
+            }
+            async function readSignatures() {
+              try {
+                const res = await store.gh.rest.repos.getContent({ owner: store.owner, repo: store.repo, path: FILE, ref: store.ref });
+                return { sha: res.data.sha, list: JSON.parse(Buffer.from(res.data.content, 'base64').toString('utf8')) };
+              } catch (e) { if (e.status === 404) return { sha: undefined, list: [] }; throw e; }
+            }
+            async function writeSignatures(list, sha, message) {
+              await store.gh.rest.repos.createOrUpdateFileContents({
+                owner: store.owner, repo: store.repo, path: FILE, branch: store.ref, sha, message,
+                content: Buffer.from(JSON.stringify(list, null, 2) + '\n').toString('base64'),
+              });
+            }
+
+            const pr = (await github.rest.pulls.get({ owner, repo, pull_number: prNumber })).data;
+            const commits = await github.paginate(github.rest.pulls.listCommits, { owner, repo, pull_number: prNumber, per_page: 100 });
+
+            // Everyone who authored a commit. A commit whose author is not
+            // linked to a GitHub account cannot be attributed to a signature.
+            const authors = new Map();
+            const unlinked = new Set();
+            for (const c of commits) {
+              if (c.author?.login) authors.set(c.author.login.toLowerCase(), { login: c.author.login, id: c.author.id });
+              else unlinked.add(c.commit.author?.email ?? 'unknown');
+            }
+
+            await ensureBranch();
+            let { sha, list } = await readSignatures();
+            const signed = () => new Set(list.filter((s) => s.version === VERSION).map((s) => s.login.toLowerCase()));
+
+            // A signing comment on this pull request.
+            if (context.eventName === 'issue_comment') {
+              const body = context.payload.comment.body.trim().toLowerCase();
+              const commenter = context.payload.comment.user;
+              if (body !== PHRASE) { core.info('Not a signing comment.'); return; }
+              if (!authors.has(commenter.login.toLowerCase())) {
+                core.info(`${commenter.login} has no commits in this pull request; nothing to sign.`);
+              } else if (!signed().has(commenter.login.toLowerCase())) {
+                list.push({ login: commenter.login, id: commenter.id, version: VERSION, signedAt: new Date().toISOString(), pullRequest: prNumber, comment: context.payload.comment.html_url });
+                await writeSignatures(list, sha, `${commenter.login} signed the CLA (v${VERSION}) in #${prNumber}`);
+              }
+            }
+
+            const missing = [...authors.values()].filter((a) => !exempt.has(a.login.toLowerCase()) && !signed().has(a.login.toLowerCase()));
+            const passed = missing.length === 0 && unlinked.size === 0;
+
+            await github.rest.repos.createCommitStatus({
+              owner, repo, sha: pr.head.sha, context: 'CLA',
+              state: passed ? 'success' : 'failure',
+              description: passed ? 'All contributors have signed the CLA' : 'Contributor licence agreement not signed',
+              target_url: `https://github.com/${owner}/${repo}/blob/${pr.base.ref}/CLA.md`,
+            });
+
+            // One bot comment per pull request, updated in place.
+            const MARKER = '<!-- cla-bot -->';
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: prNumber, per_page: 100 });
+            const mine = comments.find((c) => c.body?.includes(MARKER));
+            let message;
+            if (passed) {
+              message = mine ? `${MARKER}\nThank you — the contributor licence agreement is signed for everyone in this pull request.` : null;
+            } else {
+              const lines = [MARKER, 'Thanks for the contribution! Before it can be merged, the [contributor licence agreement](../blob/' + pr.base.ref + '/CLA.md) needs to be signed.', ''];
+              if (missing.length) {
+                lines.push(`Still to sign: ${missing.map((a) => '@' + a.login).join(', ')}`, '', 'To sign, reply to this pull request with exactly:', '', `> ${process.env.SIGN_PHRASE}`, '');
+              }
+              if (unlinked.size) {
+                lines.push(`Some commits are not linked to a GitHub account (${[...unlinked].join(', ')}). Add that e-mail address to your GitHub account, or amend the commits to use an address that is linked, so the signature can be matched to their author.`);
+              }
+              message = lines.join('\n');
+            }
+            if (message && mine) await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body: message });
+            else if (message) await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: message });

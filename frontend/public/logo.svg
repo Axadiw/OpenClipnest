@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <!-- Micro gradient on the ring: a touch brighter at the top, deeper at the
+         bottom, so the mark reads as a lit object rather than a flat outline. -->
+    <linearGradient id="ring" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"   stop-color="#8CF0CC"/>
+      <stop offset="0.5" stop-color="#6EE7B7"/>
+      <stop offset="1"   stop-color="#52D69F"/>
+    </linearGradient>
+    <!-- Soft green under-glow — the subtle shadow that lifts the ring off the
+         black tile. -->
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="0" dy="5" stdDeviation="11" flood-color="#34D399" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+  <!-- Black rounded square (matches the iOS app icon). -->
+  <rect width="512" height="512" rx="112" fill="#06070C"/>
+  <!-- A single green ring. -->
+  <circle cx="256" cy="256" r="117.75" fill="none" stroke="url(#ring)" stroke-width="38" filter="url(#glow)"/>
+</svg>

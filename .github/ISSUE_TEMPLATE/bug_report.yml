@@ -1,0 +1,65 @@
+name: Bug report
+description: Something does not work the way the README describes.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. Security problems do not belong in a public issue — see SECURITY.md.
+
+        Remove passwords, secrets, e-mail addresses and anything from your `.env` before you paste logs or settings.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. …
+        2. …
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The version in the web app's menu (for example v1.0.0), or the output of `git describe --tags --always` in your checkout.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where does it happen?
+      multiple: true
+      options:
+        - Install, upgrade or docker compose
+        - Camera upload (FTP / FTPS)
+        - Web app
+        - iPhone or iPad app
+        - Android app
+        - macOS app
+        - Windows app
+        - Apple TV app
+        - Push notifications
+        - MCP
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: Host
+      description: The machine and system OpenClipnest runs on (e.g. "Debian 13 on x86", "Synology NAS", "Docker Desktop on Windows"), and the output of `docker compose version`.
+  - type: input
+    id: camera
+    attributes:
+      label: Camera
+      description: For upload or playback problems — the camera model and an example file name it uploads.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: The relevant part of `docker compose logs`, for example `docker compose logs --tail 200 clipnest-api clipnest-ftps clipnest-thumbnail-worker`.
+      render: text

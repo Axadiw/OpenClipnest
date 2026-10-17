@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Nightly install from scratch: the base images and the packages installed
+  # at build time keep moving even when this repository does not, and a
+  # breakage should show up here before it does for someone installing.
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  server-and-web:
+    # The nightly run is about the install; these depend only on lockfiles.
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+      - name: Install server dependencies
+        run: npm ci --legacy-peer-deps
+      - name: Install web dependencies
+        run: cd frontend && npm ci --legacy-peer-deps
+      - name: Typecheck server
+        run: npx tsc --noEmit
+      - name: Typecheck and build web app
+        run: cd frontend && npx tsc -b && npx vite build
+      - name: Lint
+        run: npx eslint .
+      - name: Test server
+        run: npx vitest run
+      - name: Test MCP server
+        run: npx vitest run --root clipnest-mcp
+      - name: Test web app
+        run: cd frontend && npx vitest run
+      - name: Test the install files (.env.example, docker-compose.yml)
+        run: node --test 'scripts/*.test.mjs'
+
+  ftp-server:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ftps-server/target
+          key: cargo-${{ hashFiles('ftps-server/Cargo.lock') }}
+      - name: Test FTP server
+        run: cd ftps-server && cargo test
+
+  # Installs the whole stack from scratch, exactly as the README describes,
+  # and checks it end to end. Also runs every night.
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Fresh install
+        run: node scripts/smoke-test.mjs
+      # Upgrade from the latest release to this tree. Skipped until the first
+      # release exists.
+      - name: Find the previous release
+        id: prev
+        run: echo "tag=$(git describe --tags --abbrev=0 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
+      - name: Upgrade from the previous release
+        if: steps.prev.outputs.tag != ''
+        run: node scripts/smoke-test.mjs --upgrade-from "${{ steps.prev.outputs.tag }}"
