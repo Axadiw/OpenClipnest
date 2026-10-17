@@ -56,10 +56,10 @@ sign-in — and is not part of this repository.
    | `PUBLIC_URL` | The address you will open in the browser, e.g. `http://192.168.1.10:8080` — or `https://clips.example.com` once you turn on [HTTPS](#https-and-access-from-outside-your-network). |
    | `FTP_HOST` | The address **cameras** use to reach this machine, e.g. `192.168.1.10`. Never `localhost`. |
    | `DISK_LIMIT` | Optional, e.g. `500GB`. Empty means no limit. |
-   | `ENCRYPTION_KEY`, `TOKEN_SECRET`, `INTERNAL_API_KEY`, `DATABASE_PASSWORD`, `STORAGE_PASSWORD` | Secrets you define. The command below fills in all five. |
+   | `ENCRYPTION_KEY`, `TOKEN_SECRET`, `DATABASE_PASSWORD`, `STORAGE_PASSWORD` | Secrets you define. The command below fills in all four. |
 
    ```bash
-   for n in ENCRYPTION_KEY TOKEN_SECRET INTERNAL_API_KEY DATABASE_PASSWORD STORAGE_PASSWORD; do sed -i.bak "s/^$n=''\$/$n='$(openssl rand -hex 32)'/" .env; done; rm -f .env.bak
+   for n in ENCRYPTION_KEY TOKEN_SECRET DATABASE_PASSWORD STORAGE_PASSWORD; do sed -i.bak "s/^$n=''\$/$n='$(openssl rand -hex 32)'/" .env; done; rm -f .env.bak
    ```
 
    It only fills in values that are still empty, so running it again never
@@ -398,7 +398,6 @@ What happens when you change a secret in `.env` and run `docker compose up -d`:
 |---|---|
 | `ENCRYPTION_KEY` | **Cannot be changed.** Recordings are encrypted with keys derived from it; with a different key the existing recordings cannot be read. |
 | `TOKEN_SECRET` | Every session in the web app and the apps ends; sign in again. Approved MCP clients keep working. |
-| `INTERNAL_API_KEY` | Nothing visible: every service picks up the new value together. |
 | `DATABASE_PASSWORD` | The database keeps the password it was created with, so changing only `.env` locks the server out of its database. Change it in the database first, then put the same value in `.env`: `docker compose exec -T clipnest-db psql -U clipnest -d clipnest -c "ALTER USER clipnest PASSWORD 'the-new-value'"` |
 | `STORAGE_USER`, `STORAGE_PASSWORD` | With [your own object storage](#your-own-object-storage): create the new key there first, then change `.env`. With the bundled storage this is untested; leave them as they are. |
 

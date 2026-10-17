@@ -1,3 +1,5 @@
+import { internalApiKeyFromEnv } from './utils/internalApiKey.js';
+
 // Runtime deployment mode. 'k8s' = periodic loops run as CronJob one-shots
 // (this process must NOT fire setInterval-based periodic work). Anything else
 // (default: docker-compose / local) keeps the in-process schedulers on.
@@ -75,7 +77,7 @@ export const CONFIG = {
   encryptionMasterKey: process.env.CLIPNEST_ENCRYPTION_MASTER_KEY || '',
 
   // Internal API key for FTPS↔API and MCP↔API communication
-  internalApiKey: process.env.CLIPNEST_INTERNAL_API_KEY || '',
+  internalApiKey: internalApiKeyFromEnv(),
 
   // Internal MCP container base URL (Docker network / k8s service name)
   internalMcpUrl: process.env.INTERNAL_MCP_URL ?? 'http://clipnest-mcp:3100',

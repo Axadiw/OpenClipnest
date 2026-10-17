@@ -47,7 +47,7 @@ const hexSecret = () => randomBytes(32).toString('hex');
  * upgrading from an earlier release, which has to start with the same
  * password and may predate that handling.
  */
-export function smokeSettings({ webPort = '8080', urlSafeDatabasePassword = false } = {}) {
+export function smokeSettings({ webPort = '8080', urlSafeDatabasePassword = false, internalApiKey = false } = {}) {
   return {
     ACCOUNT_EMAIL: 'smoke@example.org',
     // A `$` on purpose: inside single quotes .env keeps it literal (README).
@@ -57,7 +57,9 @@ export function smokeSettings({ webPort = '8080', urlSafeDatabasePassword = fals
     DISK_LIMIT: '750MB',
     ENCRYPTION_KEY: hexSecret(),
     TOKEN_SECRET: hexSecret(),
-    INTERNAL_API_KEY: hexSecret(),
+    // Only releases before the generated key needed it; an upgrade keeps it in
+    // .env, which also checks that a value there still takes precedence.
+    ...(internalApiKey ? { INTERNAL_API_KEY: hexSecret() } : {}),
     DATABASE_PASSWORD: urlSafeDatabasePassword ? hexSecret() : `${randomBytes(24).toString('base64')}/+=`,
     STORAGE_USER: 'clipnest',
     STORAGE_PASSWORD: hexSecret(),
@@ -105,7 +107,7 @@ export function fillLegacySettings(text, settings) {
   return out;
 }
 
-const SETTINGS = smokeSettings({ webPort: WEB_PORT, urlSafeDatabasePassword: Boolean(UPGRADE_FROM) });
+const SETTINGS = smokeSettings({ webPort: WEB_PORT, urlSafeDatabasePassword: Boolean(UPGRADE_FROM), internalApiKey: Boolean(UPGRADE_FROM) });
 
 // ── helpers ────────────────────────────────────────────────────────────────
 let step = 0;

@@ -41,7 +41,10 @@ x-server-env: &server_env
   PUBLIC_FTPS_PORT: ${FTP_PORT:-21}
   JWT_SECRET: ${TOKEN_SECRET:?TOKEN_SECRET is not set - copy .env.example to .env and fill it in}
   CLIPNEST_ENCRYPTION_MASTER_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is not set - copy .env.example to .env and fill it in}
-  CLIPNEST_INTERNAL_API_KEY: ${INTERNAL_API_KEY:?INTERNAL_API_KEY is not set - copy .env.example to .env and fill it in}
+  # Key the services present to each other. Generated on the first start by
+  # init-certs; INTERNAL_API_KEY in .env, if set, takes its place.
+  CLIPNEST_INTERNAL_API_KEY: ${INTERNAL_API_KEY:-}
+  CLIPNEST_INTERNAL_API_KEY_FILE: /certs/internal-api-key
   CLIPNEST_S3_ENDPOINT: ${STORAGE_ENDPOINT:-https://minio:9000}
   CLIPNEST_S3_ACCESS_KEY: ${STORAGE_USER:-clipnest}
   CLIPNEST_S3_SECRET_KEY: ${STORAGE_PASSWORD:?STORAGE_PASSWORD is not set - copy .env.example to .env and fill it in}
@@ -164,7 +167,8 @@ services:
       CLIPNEST_S3_SECRET_KEY: ${STORAGE_PASSWORD:?STORAGE_PASSWORD is not set - copy .env.example to .env and fill it in}
       CLIPNEST_S3_RECORDINGS_BUCKET: ${STORAGE_RECORDINGS_BUCKET:-recordings}
       CLIPNEST_ENCRYPTION_MASTER_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is not set - copy .env.example to .env and fill it in}
-      CLIPNEST_INTERNAL_API_KEY: ${INTERNAL_API_KEY:?INTERNAL_API_KEY is not set - copy .env.example to .env and fill it in}
+      CLIPNEST_INTERNAL_API_KEY: ${INTERNAL_API_KEY:-}
+      CLIPNEST_INTERNAL_API_KEY_FILE: /certs/internal-api-key
       CLIPNEST_INTERNAL_API_URL: http://clipnest-api:3000
       CLIPNEST_FTPS_METRICS_PORT: "0"
       REDIS_URL: redis://redis:6379
@@ -266,8 +270,9 @@ services:
     networks: [clipnest]
 
   # One-shot: private CA + certificates for the bundled object storage and the
-  # FTP server. Runs with your own object storage too: the FTP server needs
-  # its certificate either way.
+  # FTP server, plus the key the services authenticate to each other with.
+  # Runs with your own object storage too: the FTP server needs its
+  # certificate either way.
   init-certs:
     image: alpine:3.24.2
     environment:

@@ -1,4 +1,7 @@
 import { randomBytes } from 'node:crypto';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { story } from '../testing/story.js';
 import { parseDiskLimit, secretProblems, assertSecretsConfigured } from './installConfig.js';
@@ -27,6 +30,19 @@ describe('operator-defined secrets', () => {
     expect(secretProblems({ ...GOOD, CLIPNEST_ENCRYPTION_MASTER_KEY: 'CHANGE_ME_CHANGE_ME_CHANGE_ME_CHANGE_ME' })[0]).toMatch(/placeholder/);
     expect(secretProblems({ ...GOOD, CLIPNEST_INTERNAL_API_KEY: 'tooshort' })[0]).toMatch(/too short/);
     expect(() => assertSecretsConfigured({})).toThrow(/Refusing to start/);
+  });
+
+  it('accepts the internal key from the file the install generates', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'ikey-'));
+    try {
+      const file = path.join(dir, 'internal-api-key');
+      writeFileSync(file, `${wellFormed(20)}\n`);
+      expect(secretProblems({ ...GOOD, CLIPNEST_INTERNAL_API_KEY: '', CLIPNEST_INTERNAL_API_KEY_FILE: file })).toEqual([]);
+      writeFileSync(file, 'tooshort\n');
+      expect(secretProblems({ ...GOOD, CLIPNEST_INTERNAL_API_KEY: '', CLIPNEST_INTERNAL_API_KEY_FILE: file })[0]).toMatch(/too short/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('points at the .env setting and a URL-safe generator', (ctx) => {
