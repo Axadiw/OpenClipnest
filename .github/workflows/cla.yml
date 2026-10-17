@@ -30,7 +30,7 @@ jobs:
     if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/github-script@v7
+      - uses: actions/github-script@v9
         env:
           CLA_VERSION: "2"
           SIGN_PHRASE: "I have read the CLA Document and I hereby sign the CLA"
