@@ -18,7 +18,7 @@ import { envFileText, fillLegacySettings, smokeSettings } from './smoke-test.mjs
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const README = readFileSync(path.join(ROOT, 'README.md'), 'utf8');
 const ENV_EXAMPLE = readFileSync(path.join(ROOT, '.env.example'), 'utf8');
-const SECRETS = ['ENCRYPTION_KEY', 'TOKEN_SECRET', 'INTERNAL_API_KEY', 'DATABASE_PASSWORD', 'STORAGE_PASSWORD'];
+const SECRETS = ['ENCRYPTION_KEY', 'TOKEN_SECRET', 'DATABASE_PASSWORD', 'STORAGE_PASSWORD'];
 
 /** The README's command that fills in the secrets, verbatim. */
 const FILL_SECRETS = (() => {
@@ -122,6 +122,14 @@ test('bundled storage: .env.example filled in as the README says', { skip }, () 
   assert.equal(api.CLIPNEST_DISK_LIMIT, '');
   assert.equal(api.CLIPNEST_PUSH_RELAY_URL, '');
   assert.match(api.JWT_SECRET, /^[0-9a-f]{64}$/);
+  // The internal key is not in .env: every service reads the generated file.
+  assert.ok(!/^INTERNAL_API_KEY=/m.test(ENV_EXAMPLE));
+  for (const name of ['clipnest-api', 'clipnest-ftps', 'clipnest-mcp', 'clipnest-thumbnail-worker', 'clipnest-scheduler', 'clipnest-push-worker']) {
+    const env = config.services[name].environment;
+    assert.equal(env.CLIPNEST_INTERNAL_API_KEY, '', name);
+    assert.equal(env.CLIPNEST_INTERNAL_API_KEY_FILE, '/certs/internal-api-key', name);
+    assert.ok(config.services[name].volumes.some((v) => v.source === 'certs' && v.target === '/certs'), `${name} mounts the certs volume`);
+  }
   const ftps = config.services['clipnest-ftps'].environment;
   assert.equal(ftps.CLIPNEST_S3_ENDPOINT, 'https://minio:9000');
   assert.equal(ftps.CLIPNEST_S3_CA_BUNDLE, '/certs/ca.crt');
@@ -159,6 +167,14 @@ test('own object storage: no bundled MinIO, the FTP certificates are still made'
   assert.equal(api.CLIPNEST_S3_THUMBNAILS_BUCKET, 'clips-thumbnails');
   assert.equal(api.CLIPNEST_S3_SIDECARS_BUCKET, 'clips-sidecars');
   assert.equal(api.NODE_EXTRA_CA_CERTS, '/etc/ssl/certs/ca-certificates.crt');
+});
+
+test('an INTERNAL_API_KEY kept in .env from an earlier release still applies', { skip }, () => {
+  const key = 'a'.repeat(64);
+  const { ok, error, config } = composeConfig(`${setValues(filledExample(), ACCOUNT)}INTERNAL_API_KEY='${key}'\n`);
+  assert.ok(ok, error);
+  assert.equal(config.services['clipnest-api'].environment.CLIPNEST_INTERNAL_API_KEY, key);
+  assert.equal(config.services['clipnest-ftps'].environment.CLIPNEST_INTERNAL_API_KEY, key);
 });
 
 test('an empty required setting stops compose with a message that names it', { skip }, () => {
@@ -325,7 +341,7 @@ services:
 `;
 
 test('an older release\'s compose file is filled in, with $ escaped for Compose', () => {
-  const settings = smokeSettings({ webPort: '8090', urlSafeDatabasePassword: true });
+  const settings = smokeSettings({ webPort: '8090', urlSafeDatabasePassword: true, internalApiKey: true });
   const out = fillLegacySettings(LEGACY, settings);
   // Compose reads `$$` as a literal `$`, so every `$` of the password is doubled.
   const escaped = settings.ACCOUNT_PASSWORD.replaceAll('$', () => '$$');

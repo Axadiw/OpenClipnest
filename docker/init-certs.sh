@@ -2,16 +2,20 @@
 # First-start certificate setup, run by the `init-certs` service on every
 # `docker compose up`; it only does work while a certificate is missing.
 #
-# Creates a private CA plus two certificates in the `certs` volume:
+# Creates a private CA plus two certificates in the `certs` volume, and the
+# key the services authenticate to each other with:
 #   - object storage (MinIO): encryption with per-account keys (SSE-C) is only
 #     allowed over TLS, so the internal storage endpoint must speak HTTPS even
 #     though it never leaves the compose network;
 #   - FTP server: a self-signed certificate for cameras that use FTPS. Cameras
 #     do not validate it. Replace fullchain.pem / privkey.pem with a real
 #     certificate if your FTP clients do.
+#   - internal-api-key: shared by the API, the FTP server and the MCP server.
+#     Nothing stored depends on it. To replace it, delete the file and run
+#     `docker compose down && docker compose up -d`.
 set -e
 
-if [ ! -f /certs/public.crt ] || [ ! -f /certs/fullchain.pem ]; then
+if [ ! -f /certs/public.crt ] || [ ! -f /certs/fullchain.pem ] || [ ! -s /certs/internal-api-key ]; then
     # The base image has no openssl tool. It is installed from the image's own
     # Alpine release, so only the first start (or one after the certs volume
     # was removed) needs internet access.
@@ -39,6 +43,12 @@ if [ ! -f /certs/fullchain.pem ]; then
         -days 3650 -nodes -subj "/CN=${FTP_HOST:-clipnest}" 2>/dev/null
 fi
 
+if [ ! -s /certs/internal-api-key ]; then
+    echo "Generating the internal API key..."
+    openssl rand -hex 32 > /certs/internal-api-key.tmp
+    mv /certs/internal-api-key.tmp /certs/internal-api-key
+fi
+
 # The services run as unprivileged users; these keys never leave the volume.
-chmod 644 /certs/private.key /certs/privkey.pem
-echo "Certificates ready."
+chmod 644 /certs/private.key /certs/privkey.pem /certs/internal-api-key
+echo "Certificates and internal key ready."

@@ -7,17 +7,24 @@
 import { eq, isNull, or, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { plans, users } from '../db/schema/index.js';
+import { internalApiKeyFromEnv } from '../utils/internalApiKey.js';
 
 // ── Secrets ────────────────────────────────────────────────────────────────
 
 /**
- * Secrets the operator must define. `minLength` is a floor, not a format.
- * `setting` is the name the value has in the docker-compose install's `.env`.
+ * Secrets the server needs. `minLength` is a floor, not a format. `setting`
+ * is the name the value has in the docker-compose install's `.env`; `read`
+ * resolves a value that may come from somewhere other than its variable.
  */
-const REQUIRED_SECRETS: ReadonlyArray<{ name: string; setting: string; minLength: number; purpose: string }> = [
+const REQUIRED_SECRETS: ReadonlyArray<{
+  name: string; setting: string; minLength: number; purpose: string; read?: (env: NodeJS.ProcessEnv) => string;
+}> = [
   { name: 'JWT_SECRET', setting: 'TOKEN_SECRET', minLength: 32, purpose: 'signs session tokens' },
   { name: 'CLIPNEST_ENCRYPTION_MASTER_KEY', setting: 'ENCRYPTION_KEY', minLength: 32, purpose: 'encrypts every recording — losing it loses the recordings' },
-  { name: 'CLIPNEST_INTERNAL_API_KEY', setting: 'INTERNAL_API_KEY', minLength: 32, purpose: 'authenticates the FTP server to the API' },
+  // The one exception to "nothing is generated": the install creates this key
+  // on its first start (init-certs) and every service reads it from that
+  // file. Nothing stored depends on it, so a key nobody wrote down costs nothing.
+  { name: 'CLIPNEST_INTERNAL_API_KEY', setting: 'INTERNAL_API_KEY', minLength: 32, purpose: 'authenticates the FTP server to the API', read: internalApiKeyFromEnv },
   { name: 'CLIPNEST_S3_ACCESS_KEY', setting: 'STORAGE_USER', minLength: 3, purpose: 'object storage user' },
   { name: 'CLIPNEST_S3_SECRET_KEY', setting: 'STORAGE_PASSWORD', minLength: 16, purpose: 'object storage password' },
 ];
@@ -26,14 +33,14 @@ const REQUIRED_SECRETS: ReadonlyArray<{ name: string; setting: string; minLength
 const PLACEHOLDER = /change[-_ ]?me|replace[-_ ]?me|example|your[-_ ]|^x+$|^0+$|password|secret$/i;
 
 /**
- * Problems with the operator-defined secrets, one line each. Empty ⇒ fine.
- * Nothing is ever generated on the operator's behalf: a silently generated
+ * Problems with the secrets, one line each. Empty ⇒ fine. Nothing the
+ * operator must keep is ever generated on their behalf: a silently generated
  * encryption key is a key nobody wrote down.
  */
 export function secretProblems(env: NodeJS.ProcessEnv = process.env): string[] {
   const problems: string[] = [];
-  for (const { name, setting, minLength, purpose } of REQUIRED_SECRETS) {
-    const value = env[name] ?? '';
+  for (const { name, setting, minLength, purpose, read } of REQUIRED_SECRETS) {
+    const value = read ? read(env) : env[name] ?? '';
     const what = `${purpose}; ${setting} in .env`;
     if (!value) problems.push(`${name} is not set (${what})`);
     else if (PLACEHOLDER.test(value)) problems.push(`${name} still holds a placeholder value (${what})`);

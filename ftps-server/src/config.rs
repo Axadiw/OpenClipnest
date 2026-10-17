@@ -77,10 +77,55 @@ impl Config {
 
             internal_api_url: env::var("CLIPNEST_INTERNAL_API_URL")
                 .unwrap_or_else(|_| "http://clipnest-api:3000".to_string()),
-            internal_api_key: env::var("CLIPNEST_INTERNAL_API_KEY")
-                .expect("CLIPNEST_INTERNAL_API_KEY is required"),
+            internal_api_key: internal_api_key(
+                env::var("CLIPNEST_INTERNAL_API_KEY").ok(),
+                env::var("CLIPNEST_INTERNAL_API_KEY_FILE").ok(),
+            )
+            .expect("CLIPNEST_INTERNAL_API_KEY or CLIPNEST_INTERNAL_API_KEY_FILE is required"),
             redis_url: env::var("REDIS_URL")
                 .unwrap_or_else(|_| "redis://redis:6379".to_string()),
         }
+    }
+}
+
+/// The key presented to the API on /internal: CLIPNEST_INTERNAL_API_KEY when
+/// set, otherwise the contents of the file CLIPNEST_INTERNAL_API_KEY_FILE
+/// names (the self-hosted install generates one on first start). Same rule
+/// as `internalApiKeyFromEnv` in server/config.ts.
+fn internal_api_key(value: Option<String>, file: Option<String>) -> Option<String> {
+    if let Some(v) = value.filter(|v| !v.is_empty()) {
+        return Some(v);
+    }
+    let path = file.filter(|p| !p.is_empty())?;
+    let key = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read CLIPNEST_INTERNAL_API_KEY_FILE {path}: {e}"));
+    Some(key.trim().to_string()).filter(|k| !k.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::internal_api_key;
+
+    #[test]
+    fn the_variable_wins_over_the_file() {
+        let key = internal_api_key(Some("from-env".into()), Some("/nonexistent".into()));
+        assert_eq!(key.as_deref(), Some("from-env"));
+    }
+
+    #[test]
+    fn the_file_is_read_and_trimmed_when_the_variable_is_empty() {
+        let dir = std::env::temp_dir().join(format!("ikey-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("internal-api-key");
+        std::fs::write(&path, "abc123\n").unwrap();
+        let key = internal_api_key(Some(String::new()), Some(path.display().to_string()));
+        assert_eq!(key.as_deref(), Some("abc123"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn neither_means_none() {
+        assert_eq!(internal_api_key(None, None), None);
+        assert_eq!(internal_api_key(Some(String::new()), Some(String::new())), None);
     }
 }

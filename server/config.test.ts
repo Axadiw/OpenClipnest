@@ -4,6 +4,7 @@ import pg from 'pg';
 import { parse } from 'pg-connection-string';
 import { story } from './testing/story.js';
 import { databaseUrlFromEnv, cleanFrameEnabledFromEnv } from './config.js';
+import { internalApiKeyFromEnv } from './utils/internalApiKey.js';
 
 /**
  * Every character that is unsafe in the userinfo part of a URL, plus a space.
@@ -76,5 +77,24 @@ describe('cleanFrameEnabledFromEnv', () => {
     expect(cleanFrameEnabledFromEnv({ CLIPNEST_CLEAN_FRAME_ENABLED: 'true' })).toBe(true);
     expect(cleanFrameEnabledFromEnv({ CLIPNEST_CLEAN_FRAME_ENABLED: '' })).toBe(true);
     expect(cleanFrameEnabledFromEnv({ CLIPNEST_CLEAN_FRAME_ENABLED: 'false' })).toBe(false);
+  });
+});
+
+describe('internalApiKeyFromEnv', () => {
+  const key = randomBytes(32).toString('hex');
+  const noFile = (): string => { throw new Error('the file must not be read'); };
+
+  it('uses the variable when it is set, without reading the file', () => {
+    expect(internalApiKeyFromEnv({ CLIPNEST_INTERNAL_API_KEY: key, CLIPNEST_INTERNAL_API_KEY_FILE: '/certs/k' }, noFile)).toBe(key);
+  });
+
+  it('reads the generated key file when the variable is empty', (ctx) => {
+    story(ctx, 'Instalacja self-hosted generuje klucz wewnętrzny sama (init-certs) i każda usługa czyta go z pliku — użytkownik nie musi go wpisywać do .env.');
+    const read = (path: string) => { expect(path).toBe('/certs/internal-api-key'); return `${key}\n`; };
+    expect(internalApiKeyFromEnv({ CLIPNEST_INTERNAL_API_KEY: '', CLIPNEST_INTERNAL_API_KEY_FILE: '/certs/internal-api-key' }, read)).toBe(key);
+  });
+
+  it('is empty with neither, so /internal refuses every caller', () => {
+    expect(internalApiKeyFromEnv({}, noFile)).toBe('');
   });
 });
