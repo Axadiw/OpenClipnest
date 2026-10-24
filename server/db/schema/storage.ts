@@ -7,6 +7,7 @@ import {
   index,
   integer,
   pgTable,
+  primaryKey,
   serial,
   text,
   timestamp,
@@ -122,3 +123,74 @@ export type NewStorageOrphanObject = typeof storageOrphanObjects.$inferInsert;
 
 export type UploadEvent = typeof uploadEvents.$inferSelect;
 export type NewUploadEvent = typeof uploadEvents.$inferInsert;
+
+// content_deletions — one lock episode per account whose access ended for
+// lack of an active plan: when its recordings may be deleted, an
+// administrator's hold, and the point of no return (started_at: only content
+// older than it is deleted, so what is uploaded after a payment survives).
+export type HoldReason = 'admin' | 'undeliverable';
+export const contentDeletions = pgTable('content_deletions', {
+  userId: integer('user_id').primaryKey().references(() => users.id, { onDelete: 'cascade' }),
+  lockStartedAt: timestamp('lock_started_at', { withTimezone: true }).notNull(),
+  deleteAfter: timestamp('delete_after', { withTimezone: true }).notNull(),
+  heldAt: timestamp('held_at', { withTimezone: true }),
+  heldBy: integer('held_by').references(() => users.id, { onDelete: 'set null' }),
+  holdNote: text('hold_note'),
+  startedAt: timestamp('started_at', { withTimezone: true }),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+  objectsRemoved: integer('objects_removed').notNull().default(0),
+  rowsRemoved: integer('rows_removed').notNull().default(0),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  noticeRefAt: timestamp('notice_ref_at', { withTimezone: true }),
+  firstStatedAt: timestamp('first_stated_at', { withTimezone: true }),
+  holdReason: text('hold_reason').$type<HoldReason>(),
+  holdExpiresAt: timestamp('hold_expires_at', { withTimezone: true }),
+}, (t) => ({
+  holdReasonCheck: check('content_deletions_hold_reason_check',
+    sql`${t.holdReason} IS NULL OR ${t.holdReason} IN ('admin', 'undeliverable')`),
+}));
+
+// content_deletion_runs — one row per run of the daily job; a row without
+// finished_at is a run that was killed before it ended.
+export const contentDeletionRuns = pgTable('content_deletion_runs', {
+  id: serial('id').primaryKey(),
+  startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+  mode: text('mode').notNull(),
+  candidates: integer('candidates').notNull().default(0),
+  firstNotices: integer('first_notices').notNull().default(0),
+  finalNotices: integer('final_notices').notNull().default(0),
+  due: integer('due').notNull().default(0),
+  deleted: integer('deleted').notNull().default(0),
+  resumed: integer('resumed').notNull().default(0),
+  held: integer('held').notNull().default(0),
+  skipped: integer('skipped').notNull().default(0),
+  failed: integer('failed').notNull().default(0),
+  // Accounts due this run but left for a later day by the per-run limit.
+  deferred: integer('deferred').notNull().default(0),
+  truncated: boolean('truncated').notNull().default(false),
+  renotices: integer('renotices').notNull().default(0),
+  holdsReleased: integer('holds_released').notNull().default(0),
+});
+
+// account_notices — each notice sent to an account, once per (kind, reference
+// time): the lock start for the first notice and the completion notice, the
+// deletion date for the final one (a postponed date gets a new final notice).
+export const ACCOUNT_NOTICE_KINDS = ['content_deletion_first', 'content_deletion_final', 'content_deleted'] as const;
+export type AccountNoticeKind = (typeof ACCOUNT_NOTICE_KINDS)[number];
+export const accountNotices = pgTable(
+  'account_notices',
+  {
+    userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+    kind: text('kind').$type<AccountNoticeKind>().notNull(),
+    refAt: timestamp('ref_at', { withTimezone: true }).notNull(),
+    sentAt: timestamp('sent_at', { withTimezone: true }).notNull().defaultNow(),
+    providerMessageId: text('provider_message_id'),
+  },
+  (table) => ({
+    messageIdx: index('account_notices_message_idx').on(table.providerMessageId).where(sql`${table.providerMessageId} IS NOT NULL`),
+    pk: primaryKey({ name: 'account_notices_pkey', columns: [table.userId, table.kind, table.refAt] }),
+    kindCheck: check('account_notices_kind_check',
+      sql`${table.kind} IN ('content_deletion_first', 'content_deletion_final', 'content_deleted')`),
+  }),
+);

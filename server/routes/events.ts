@@ -17,6 +17,7 @@ import { mediaRateLimit } from '../middleware/rateLimit.js';
 import { pipeS3ToResponse } from '../utils/s3Stream.js';
 import { enrichEventsWithViewMeta, enrichEventWithViewMeta } from '../services/cameraProfileResolver.js';
 import { videoRouter } from './events/video.js';
+import { requireUnlockedAccount } from '../middleware/accountAccess.js';
 
 const router = Router();
 
@@ -248,7 +249,7 @@ router.get('/:id/detail', async (req, res) => {
   }
 });
 
-router.post('/:id/media-token', async (req, res) => {
+router.post('/:id/media-token', requireUnlockedAccount, async (req: Request<{ id: string }>, res) => {
   try {
     const userId = req.user?.userId;
     if (!userId) { res.status(401).json({ error: 'Unauthorized' }); return; }
@@ -466,7 +467,7 @@ async function deleteEventOwned(
   return 'ok';
 }
 
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', requireUnlockedAccount, async (req: Request<{ id: string }>, res) => {
   try {
     const userId = req.user?.userId;
     if (!userId) { res.status(401).json({ error: 'Unauthorized' }); return; }
@@ -483,7 +484,7 @@ router.delete('/:id', async (req, res) => {
 
 const BULK_DELETE_LIMIT = 100;
 
-router.delete('/', async (req, res) => {
+router.delete('/', requireUnlockedAccount, async (req, res) => {
   try {
     const userId = req.user?.userId;
     if (!userId) { res.status(401).json({ error: 'Unauthorized' }); return; }

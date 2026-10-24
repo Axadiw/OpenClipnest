@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { api, ApiError, setToken, setRefreshToken, getToken } from './api';
+import { api, ApiError, setToken, setRefreshToken, getToken, logout, clearToken } from './api';
 import { story } from './test-story';
 
 const RATE_LIMITED = 'clipnest:rate-limited';
@@ -68,5 +68,64 @@ describe('api request() — 429 / Retry-After', () => {
     expect((err as ApiError).status).toBe(429);
     expect(getToken()).toBe('access-token'); // session preserved
     expect(reloadSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('logout()', () => {
+  let fetchSpy: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+    fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  function ok(body: unknown = { success: true }): Response {
+    return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }
+
+  it('ends only this device by default, using the tokens it had when called', async (ctx) => {
+    story(ctx, 'Wylogowanie w przeglądarce kończy tylko jej sesję — i działa, choć tokeny lokalne są czyszczone zaraz po wywołaniu.');
+    setToken('access-1');
+    setRefreshToken('refresh-1');
+    fetchSpy.mockResolvedValueOnce(ok());
+
+    const pending = logout();
+    clearToken();
+
+    expect(await pending).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/v0/auth/logout');
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer access-1');
+    expect(JSON.parse(init.body as string)).toEqual({ scope: 'device' });
+  });
+
+  it('refreshes an expired access token once and then signs out', async (ctx) => {
+    story(ctx, 'Gdy access token już wygasł, wylogowanie odświeża go zapamiętanym refresh tokenem i dopiero wtedy kończy sesję — inaczej sesja zostałaby żywa na serwerze.');
+    setToken('expired');
+    setRefreshToken('refresh-1');
+    fetchSpy
+      .mockResolvedValueOnce(res401())
+      .mockResolvedValueOnce(ok({ token: 'access-2', refreshToken: 'refresh-2' }))
+      .mockResolvedValueOnce(ok());
+
+    const pending = logout('all');
+    clearToken();
+
+    expect(await pending).toBe(true);
+    const calls = fetchSpy.mock.calls as Array<[string, RequestInit]>;
+    expect(calls.map(c => c[0])).toEqual(['/api/v0/auth/logout', '/api/v0/auth/refresh', '/api/v0/auth/logout']);
+    expect(JSON.parse(calls[1][1].body as string)).toEqual({ refreshToken: 'refresh-1' });
+    expect((calls[2][1].headers as Record<string, string>).Authorization).toBe('Bearer access-2');
+    expect(JSON.parse(calls[2][1].body as string)).toEqual({ scope: 'all' });
+  });
+
+  it('resolves false instead of throwing when the network is down', async (ctx) => {
+    story(ctx, 'Brak sieci nie może zablokować lokalnego wylogowania — funkcja nie rzuca, tylko zwraca false.');
+    setToken('access-1');
+    fetchSpy.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    expect(await logout()).toBe(false);
   });
 });

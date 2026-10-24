@@ -18,6 +18,7 @@ import { formatEventDateTime, formatEventTime, nowWallClock, wallClockDayStr } f
 import { useAccountTimezone } from '../hooks/useAccountTimezone';
 import { useVideoStallRetry } from '../hooks/useVideoStallRetry';
 import { usePlaybackBeacon } from '../hooks/usePlaybackBeacon';
+import { useScrubCacheLifetime } from '../hooks/useScrubCacheLifetime';
 import { paletteForCameras } from '../lib/cameraColors';
 import { parseTimelineUrlParams, serializeInlineVideoToParams, clampSeekToDuration } from './timelineUrlState';
 import { dayViewForTimestamp, dayViewForDateStr } from './timelineDayView';
@@ -174,6 +175,8 @@ export function TimelineView({ cameraFilter, onPlay: _onPlay, allCameras }: Prop
   });
   const [inlineVideo, setInlineVideo] = useState<{ event: CameraEvent; view: ViewId; seekSec?: number } | null>(null);
   const [inlineVideoSrc, setInlineVideoSrc] = useState<string | null>(null);
+  // The media-token request was refused because the account is locked.
+  const [inlineLocked, setInlineLocked] = useState(false);
   const [inlineFrameGrid, setInlineFrameGrid] = useState<number[]>([]);
   // Player "hamburger" menu open state. Declared here (alongside the other
   // inline-player state) so `handleInlinePlay` below can close it without
@@ -1024,6 +1027,7 @@ export function TimelineView({ cameraFilter, onPlay: _onPlay, allCameras }: Prop
   useEffect(() => {
     if (!inlineVideo) { setInlineVideoSrc(null); setVideoTotalBytes(null); setInlineFrameGrid([]); return; }
     let cancelled = false;
+    setInlineLocked(false);
     setVideoTotalBytes(null);
     setInlineFrameGrid([]);
     api.getVideoUrl(inlineVideo.event.id, inlineVideo.view)
@@ -1041,7 +1045,10 @@ export function TimelineView({ cameraFilter, onPlay: _onPlay, allCameras }: Prop
           .then(g => { if (!cancelled) setInlineFrameGrid(g); })
           .catch(() => {});
       })
-      .catch(() => {});
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        if (err instanceof ApiError && err.status === 403 && err.body?.code === 'ACCOUNT_LOCKED') setInlineLocked(true);
+      });
     return () => { cancelled = true; };
   }, [inlineVideo]);
 
@@ -1341,6 +1348,10 @@ export function TimelineView({ cameraFilter, onPlay: _onPlay, allCameras }: Prop
   // (the deferred-seek effect above is the single owner of seek state).
   const stallRetry = useVideoStallRetry(inlineVideoRef, inlineVideoSrc || null);
 
+  // Free the clip's bytes in the service worker's memory cache when the inline player closes
+  // or moves to another clip. The per-seek remount keeps the same key, so it keeps the bytes.
+  useScrubCacheLifetime(inlineVideoSrc || null);
+
   // Playback counts for the activity dashboard. The timeline's inline player is
   // a separate <video> from the grid player's, so it needs its own beacon.
   // `inlineVideo` is the bind token: it gets a new identity on every
@@ -1385,7 +1396,7 @@ export function TimelineView({ cameraFilter, onPlay: _onPlay, allCameras }: Prop
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [inlineVideo, inlineStepFrame]);
 
-  const isVideoLoading = seekPending || videoBuffering || stallRetry.retrying || stallRetry.failed;
+  const isVideoLoading = !inlineLocked && (seekPending || videoBuffering || stallRetry.retrying || stallRetry.failed);
 
   // Hide the rapidly-changing % + byte detail for the first 5s of a load —
   // mirrors the iOS PlayerLoadingOverlay (spinner-only, details fade in after
@@ -1838,7 +1849,9 @@ export function TimelineView({ cameraFilter, onPlay: _onPlay, allCameras }: Prop
               })()
             ) : (
               <div className="timeline-inline-video" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <span>Loading...</span>
+                {inlineLocked
+                  ? <span data-testid="timeline-inline-locked" style={{ color: '#fff', fontWeight: 500 }}>{t('account.lockedPlayback')}</span>
+                  : <span>Loading...</span>}
               </div>
             )}
           </>

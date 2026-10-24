@@ -32,6 +32,25 @@ interface Journal {
   entries: JournalEntry[];
 }
 
+/**
+ * Re-execute one migration file inside a scratch schema (same `"public".`
+ * rewrite and breakpoint split as migrateToSchema), without touching the
+ * tracking table. Used to prove a data migration is re-runnable.
+ */
+export async function runMigrationFileInSchema(
+  pool: Pool,
+  schema: string,
+  migrationsDir: string,
+  tag: string,
+): Promise<void> {
+  const rawSql = readFileSync(join(migrationsDir, `${tag}.sql`), 'utf8');
+  const patchedSql = rawSql.replace(/"public"\./g, `"${schema}".`);
+  const statements = patchedSql.split('--> statement-breakpoint').map((s) => s.trim()).filter(Boolean);
+  for (const stmt of statements) {
+    await pool.query(stmt);
+  }
+}
+
 export async function migrateToSchema(
   pool: Pool,
   schema: string,

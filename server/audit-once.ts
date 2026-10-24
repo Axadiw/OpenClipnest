@@ -40,7 +40,7 @@
  * `concurrencyPolicy: Forbid` on the CronJob prevents overlap between runs.
  */
 
-import { Sentry } from './sentry.js';
+import { captureException, closeErrorReporting } from './errorReporting.js';
 import { initDb } from './db/index.js';
 import { purgeOldUploadEvents } from './db/queries/storage.js';
 import { runStorageReconciliation } from './services/storageReconciler.js';
@@ -157,20 +157,19 @@ async function main(): Promise<void> {
 main()
   .then(async () => {
     await closeRedis();
-    // Happy-path flush: 200 ms is plenty for the in-cluster ~50 ms latency
-    // to the Sentry ingest endpoint when it's healthy, and short enough
-    // that a Sentry outage doesn't push this CronJob past its deadline budget.
-    // Dropped warn events on a degraded Sentry are acceptable — they're
-    // diagnostic-grade, not audit-critical.
-    await Sentry.close(200);
+    // Happy-path flush: 200 ms is plenty for a healthy error-reporting
+    // endpoint, and short enough that an outage there doesn't push this
+    // CronJob past its deadline budget. Dropped warn events on a degraded
+    // endpoint are acceptable — they're diagnostic-grade, not audit-critical.
+    await closeErrorReporting(200);
     process.exit(0);
   })
   .catch(async err => {
     console.error('audit-once: failed:', err instanceof Error ? err.stack ?? err.message : String(err));
-    Sentry.captureException(err);
+    captureException(err);
     // Catch-path keeps 2000 ms — a captured exception is the rare event we
-    // really want delivered to Sentry, and the pod is about to exit anyway.
-    await Sentry.close(2000);
+    // really want delivered, and the pod is about to exit anyway.
+    await closeErrorReporting(2000);
     await closeRedis().catch(() => {});
     process.exit(1);
   });

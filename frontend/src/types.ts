@@ -67,6 +67,11 @@ export interface User {
   bannedReason?: string | null;
   activeBanCount?: number;
   deletionStatus?: 'active' | 'pending_deletion' | 'deleting' | 'failed';
+  // adminLocked: locked by an administrator; planLocked: locked for lack of an active plan; accessLocked: either.
+  accessLocked?: boolean;
+  adminLocked?: boolean;
+  planLocked?: boolean;
+  planOverrideAt?: string | null;
 }
 
 export interface Plan {
@@ -74,6 +79,11 @@ export interface Plan {
   name: string;
   diskSpaceBytes: number;
   monthlyTransferBytes: number;
+  isPublic: boolean;
+  sortOrder: number;
+  monthlyPriceCents: number | null;
+  currency: string;
+  priceLookupKey: string | null;
   userCount?: number;
 }
 
@@ -91,7 +101,16 @@ export type NotificationKind =
   | 'thumbnail_failed'
   | 'user_banned'
   | 'auto_deleted_oldest'
-  | 'duplicate_file';
+  | 'duplicate_file'
+  // A scheduled change to a smaller plan was called off because the
+  // recordings no longer fit in it. details.plan = that plan's name.
+  | 'plan_change_cancelled'
+  // The account's recordings will be deleted because its access ended for
+  // lack of an active plan. details.at = the deletion day (ISO, 00:00 UTC),
+  // details.final = this is the notice the day before.
+  | 'content_deletion_scheduled'
+  // The account's recordings were deleted for that reason (the account stays).
+  | 'content_deleted';
 
 export interface Notification {
   id: string;

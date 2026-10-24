@@ -36,6 +36,12 @@ export type VideoFailReason =
   | 'stale_sidecar'
   | 'range_unsatisfiable';
 
+/**
+ * How a clean-frame sidecar lookup was answered: from memory (`hit`), by reading the sidecar from the object store
+ * (`miss`), or not at all because the recording has no sidecar (`absent`). Bounded — see LABEL HYGIENE.
+ */
+export type CleanSidecarCacheResult = 'hit' | 'miss' | 'absent';
+
 /** File-kind bucket for an aborted upload. Bounded on purpose. */
 export type UploadExt = 'mp4' | 'jpg' | 'other';
 
@@ -102,6 +108,7 @@ export interface MetricsRecorder {
   observeStreamThroughput(path: VideoPath, origin: TrafficOrigin, bytes: number, seconds: number): void;
   recordSlowConsumerKill(path: VideoPath): void;
   recordVideoServeFailure(reason: VideoFailReason): void;
+  recordCleanSidecarCache(result: CleanSidecarCacheResult): void;
   observeS3Ttfb(op: S3Op, seconds: number): void;
   recordS3ConnectTimeout(): void;
   recordFtpsUploadAborted(ext: UploadExt, origin: TrafficOrigin): void;
@@ -121,6 +128,7 @@ export const noopRecorder: MetricsRecorder = {
   observeStreamThroughput() {},
   recordSlowConsumerKill() {},
   recordVideoServeFailure() {},
+  recordCleanSidecarCache() {},
   observeS3Ttfb() {},
   recordS3ConnectTimeout() {},
   recordFtpsUploadAborted() {},
@@ -248,6 +256,10 @@ export function recordSlowConsumerKill(path: VideoPath): void {
 /** Record one /video request that failed (or downgraded) for a known reason. */
 export function recordVideoServeFailure(reason: VideoFailReason): void {
   recorder.recordVideoServeFailure(reason);
+}
+/** Record how one clean-frame sidecar lookup was answered (memory = hit, object store = miss, no sidecar = absent). */
+export function recordCleanSidecarCache(result: CleanSidecarCacheResult): void {
+  recorder.recordCleanSidecarCache(result);
 }
 /** Record an S3 command's round-trip latency. */
 export function observeS3Ttfb(op: S3Op, seconds: number): void {

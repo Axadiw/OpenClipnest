@@ -2,6 +2,7 @@ import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { existsSync, cpSync, statSync, createReadStream } from 'node:fs';
 import path from 'node:path';
+import { swBundle } from './vite-plugin-sw';
 
 // Injected at Docker build time via the VITE_APP_VERSION env var (set from
 // --build-arg VERSION=...). Falls back to 'local-dev' for `npm run dev`.
@@ -49,6 +50,7 @@ function editionStatic(dir: string): Plugin {
 export default defineConfig({
   plugins: [
     react(),
+    swBundle(),
     editionStatic('public-cloud'),
     {
       name: 'dev-favicon',

@@ -150,6 +150,6 @@ describe.skipIf(!TEST_DB_URL)('drizzle migrate v11: user_camera_profiles.views_c
     //  0016_add_invite_codes took this from 16 → 17;
     //  0017_add_push_device_relay took this from 17 → 18;
     //  0018_split_login_lockout_channels took this from 18 → 19).
-    expect(parseInt(rows[0].count, 10)).toBe(19);
+    expect(parseInt(rows[0].count, 10)).toBe(27); // 26->27 when 0026_purchase_statements was added
   });
 });

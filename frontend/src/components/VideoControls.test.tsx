@@ -9,6 +9,38 @@ vi.mock('../i18n', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
 
+// The preview hook owns a hidden <video> and canvas painting, which happy-dom can't run. It is
+// replaced by a stand-in that keeps the same state shape, so the bar's pointer rules and the real
+// bubble component are what these tests exercise.
+const preview = vi.hoisted(() => ({ show: [] as number[], hide: 0, index: null as unknown, total: 0 }));
+const scrubClient = vi.hoisted(() => ({ subscribed: 0, unsubscribed: 0, emit: null as null | ((r: { total: number; ranges: { start: number; end: number }[] }) => void) }));
+vi.mock('../lib/scrubCache/client', () => ({
+  isScrubCacheActive: () => true,
+  subscribeCachedRanges: (_url: string, cb: (r: { total: number; ranges: { start: number; end: number }[] }) => void) => {
+    scrubClient.emit = cb;
+    scrubClient.subscribed++;
+    return () => { scrubClient.emit = null; scrubClient.unsubscribed++; };
+  },
+}));
+vi.mock('../hooks/useScrubPreview', async () => {
+  const { useState, useRef, useCallback } = await import('react');
+  return {
+    useScrubPreview: (videoRef: { current: { duration: number } | null }) => {
+      const [state, setState] = useState<'hidden' | 'loading' | 'ready'>('hidden');
+      const [fraction, setFraction] = useState(0);
+      const canvasRef = useRef<HTMLCanvasElement | null>(null);
+      const show = useCallback((f: number) => {
+        preview.show.push(f);
+        setFraction(f);
+        setState('loading');
+      }, []);
+      const hide = useCallback(() => { preview.hide++; setState('hidden'); }, []);
+      const duration = videoRef.current?.duration ?? 0;
+      return { state, time: fraction * duration, fraction, canvasRef, show, hide, sampleIndex: preview.index, sampleTotal: preview.total };
+    },
+  };
+});
+
 // happy-dom can't decode real media, so the <video> element is faked. Only
 // the element is faked — the component's listeners, handlers and rendering
 // (the actual unit under test) are real.
@@ -37,10 +69,17 @@ function setup(overrides: Partial<FakeVideo> = {}) {
   (containerRef as { current: unknown }).current = container;
 
   const utils = render(<VideoControls videoRef={videoRef} containerRef={containerRef} />);
-  return { video, requestFullscreen, ...utils };
+  return { video, requestFullscreen, ...utils, playerContainer: container };
 }
 
 beforeEach(() => {
+  preview.show.length = 0;
+  preview.hide = 0;
+  preview.index = null;
+  preview.total = 0;
+  scrubClient.subscribed = 0;
+  scrubClient.unsubscribed = 0;
+  scrubClient.emit = null;
   localStorage.clear();
   (document as unknown as { pictureInPictureEnabled: boolean }).pictureInPictureEnabled = true;
 });
@@ -201,5 +240,171 @@ describe('VideoControls', () => {
     expect(screen.getByTestId('player-buffering')).toBeInTheDocument();
     act(() => { video.dispatchEvent(new Event('playing')); });
     expect(screen.queryByTestId('player-buffering')).toBeNull();
+  });
+});
+
+describe('VideoControls scrub preview', () => {
+  function setupBar() {
+    const utils = setup({ duration: 100, paused: false });
+    const seek = screen.getByTestId('player-seek');
+    seek.getBoundingClientRect = () => ({ left: 0, width: 100, top: 0, height: 5, right: 100, bottom: 5, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+    return { ...utils, seek };
+  }
+
+  it('mouse hover shows the bubble with the hovered time and does not seek', (ctx) => {
+    story(ctx, 'Najechanie myszą na pasek przewijania pokazuje dymek z czasem (np. 1:15) i podglądem klatki z tego miejsca — film dalej gra tam, gdzie grał.');
+    const { video, seek } = setupBar();
+    fireEvent.pointerMove(seek, { pointerType: 'mouse', buttons: 0, clientX: 75 });
+    expect(screen.getByTestId('player-seek-preview-time').textContent).toBe('1:15');
+    expect(screen.getByTestId('player-seek-preview').getAttribute('data-state')).toBe('loading');
+    expect(video.currentTime).toBe(0);
+  });
+
+  it('pointer leave hides the bubble', (ctx) => {
+    story(ctx, 'Gdy kursor zjedzie z paska, dymek z podglądem znika.');
+    const { seek } = setupBar();
+    fireEvent.pointerMove(seek, { pointerType: 'mouse', buttons: 0, clientX: 40 });
+    expect(screen.getByTestId('player-seek-preview')).toBeInTheDocument();
+    fireEvent.pointerLeave(seek, { pointerType: 'mouse' });
+    expect(screen.queryByTestId('player-seek-preview')).toBeNull();
+  });
+
+  it('touch drag shows the bubble and seeks only on release', (ctx) => {
+    story(ctx, 'Na telefonie przeciąganie uchwytu pokazuje dymek z podglądem, a film gra dalej; dopiero po puszczeniu palca odtwarzanie przeskakuje w wybrane miejsce.');
+    const { video, seek } = setupBar();
+    fireEvent.pointerDown(seek, { pointerType: 'touch', clientX: 20 });
+    expect(video.currentTime).toBe(0);
+    expect(screen.getByTestId('player-seek-preview-time').textContent).toBe('0:20');
+    fireEvent.pointerMove(window, { pointerType: 'touch', clientX: 60 });
+    expect(screen.getByTestId('player-seek-preview-time').textContent).toBe('1:00');
+    expect(video.currentTime).toBe(0);
+    fireEvent.pointerUp(window, { pointerType: 'touch', clientX: 60 });
+    expect(video.currentTime).toBeCloseTo(60, 1);
+    expect(screen.queryByTestId('player-seek-preview')).toBeNull();
+  });
+
+  it('touch pointercancel does not seek', (ctx) => {
+    story(ctx, 'Jeśli system przerwie gest (np. przewijanie strony), podgląd znika, a film nie przeskakuje.');
+    const { video, seek } = setupBar();
+    fireEvent.pointerDown(seek, { pointerType: 'touch', clientX: 20 });
+    fireEvent.pointerMove(window, { pointerType: 'touch', clientX: 60 });
+    fireEvent.pointerCancel(window, { pointerType: 'touch' });
+    expect(video.currentTime).toBe(0);
+    expect(screen.queryByTestId('player-seek-preview')).toBeNull();
+    fireEvent.pointerUp(window, { pointerType: 'touch', clientX: 60 });
+    expect(video.currentTime).toBe(0);
+  });
+
+  it('mouse drag keeps live seek', (ctx) => {
+    story(ctx, 'Przeciąganie myszą nadal przewija film na żywo, bez dymka — zachowanie z komputera się nie zmienia.');
+    const { video, seek } = setupBar();
+    fireEvent.pointerMove(seek, { pointerType: 'mouse', buttons: 0, clientX: 30 });
+    fireEvent.pointerDown(seek, { pointerType: 'mouse', clientX: 30 });
+    expect(video.currentTime).toBeCloseTo(30, 5);
+    expect(screen.queryByTestId('player-seek-preview')).toBeNull();
+    fireEvent.pointerMove(seek, { pointerType: 'mouse', buttons: 1, clientX: 50 });
+    expect(screen.queryByTestId('player-seek-preview')).toBeNull();
+    fireEvent.pointerUp(window, { pointerType: 'mouse', clientX: 50 });
+  });
+  it('keeps the bar and bubble up while a mouse rests on the bar, then auto-hides after leave', (ctx) => {
+    story(ctx, 'Gdy użytkownik zatrzyma kursor na pasku, żeby obejrzeć podgląd, pasek i dymek nie znikają po 2,5 s; po zjechaniu kursorem pasek znów chowa się sam.');
+    vi.useFakeTimers();
+    try {
+      const { seek, playerContainer } = setupBar();
+      act(() => { playerContainer.dispatchEvent(new Event('pointerenter')); });
+      fireEvent.pointerMove(seek, { pointerType: 'mouse', buttons: 0, clientX: 40 });
+      act(() => { vi.advanceTimersByTime(5000); });
+      expect(screen.getByTestId('player-controls').className).not.toContain('video-controls-hidden');
+      expect(screen.getByTestId('player-seek-preview')).toBeInTheDocument();
+      fireEvent.pointerLeave(seek, { pointerType: 'mouse' });
+      expect(screen.queryByTestId('player-seek-preview')).toBeNull();
+      act(() => { vi.advanceTimersByTime(3000); });
+      expect(screen.getByTestId('player-controls').className).toContain('video-controls-hidden');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the bar and bubble up while a finger holds the knob, then auto-hides after release', (ctx) => {
+    story(ctx, 'Palec przytrzymany na uchwycie dłużej niż 2,5 s nie powoduje zniknięcia paska ani dymka; po puszczeniu film przeskakuje, a pasek wraca do zwykłego chowania się.');
+    vi.useFakeTimers();
+    try {
+      const { video, seek } = setupBar();
+      fireEvent.pointerDown(seek, { pointerType: 'touch', clientX: 20 });
+      fireEvent.pointerMove(window, { pointerType: 'touch', clientX: 50 });
+      act(() => { vi.advanceTimersByTime(5000); });
+      expect(screen.getByTestId('player-controls').className).not.toContain('video-controls-hidden');
+      expect(screen.getByTestId('player-seek-preview')).toBeInTheDocument();
+      fireEvent.pointerUp(window, { pointerType: 'touch', clientX: 50 });
+      expect(video.currentTime).toBeCloseTo(50, 1);
+      act(() => { vi.advanceTimersByTime(3000); });
+      expect(screen.getByTestId('player-controls').className).toContain('video-controls-hidden');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('VideoControls cached stretches', () => {
+  function mount() {
+    // 30 samples of 100 bytes each, 3 s long; the file is 4000 bytes.
+    const n = 30;
+    preview.total = 4000;
+    preview.index = {
+      pts: Float64Array.from({ length: n }, (_, i) => i / 10),
+      offset: Float64Array.from({ length: n }, (_, i) => 1000 + i * 100),
+      size: Uint32Array.from({ length: n }, () => 100),
+      keyframes: Uint32Array.from([0, 20]),
+      duration: 3,
+      trackSpans: { dts: new Float64Array(0), start: new Float64Array(0), end: new Float64Array(0) },
+    };
+    const video = Object.assign(new FakeVideo(), { duration: 3 }) as FakeVideo & { currentSrc: string };
+    video.currentSrc = '/api/v0/events/abc/video/00?media_token=T&fmt=clean';
+    const videoRef = createRef<HTMLVideoElement>();
+    (videoRef as { current: unknown }).current = video;
+    const containerRef = createRef<HTMLElement>();
+    (containerRef as { current: unknown }).current = document.createElement('div');
+    render(<VideoControls videoRef={videoRef} containerRef={containerRef} />);
+    return video;
+  }
+
+  it('renders a grey segment for cached ranges that video.buffered lacks', (ctx) => {
+    story(ctx, 'Fragment nagrania pobrany tylko przez podgląd po najechaniu myszą jest od razu szary na pasku, choć film nigdy tam nie grał; reszta paska zostaje bez zacieniowania.');
+    mount();
+    expect(screen.queryAllByTestId('player-seek-buffered')).toHaveLength(0);
+    act(() => { scrubClient.emit?.({ total: 4000, ranges: [{ start: 3000, end: 4000 }] }); });
+    const segs = screen.getAllByTestId('player-seek-buffered');
+    expect(segs).toHaveLength(1);
+    expect(parseFloat((segs[0] as HTMLElement).style.left)).toBeCloseTo(66.67, 1);
+  });
+
+  it('paints nothing when the cached bytes belong to a file of another size', (ctx) => {
+    story(ctx, 'Jeśli pamięć podręczna trzyma bajty innej wersji pliku niż ta, z której odczytano układ nagrania, pasek nie zaznacza niczego na szaro.');
+    mount();
+    act(() => { scrubClient.emit?.({ total: 5000, ranges: [{ start: 3000, end: 4000 }] }); });
+    expect(screen.queryAllByTestId('player-seek-buffered')).toHaveLength(0);
+    act(() => { scrubClient.emit?.({ total: 0, ranges: [{ start: 3000, end: 4000 }] }); });
+    expect(screen.queryAllByTestId('player-seek-buffered')).toHaveLength(0);
+  });
+
+  it('keeps the subscription and the grey segments when only the media token changes', (ctx) => {
+    story(ctx, 'Odświeżenie tokenu w adresie wideo nie powoduje mignięcia szarych odcinków na pasku.');
+    const video = mount();
+    act(() => { scrubClient.emit?.({ total: 4000, ranges: [{ start: 3000, end: 4000 }] }); });
+    expect(scrubClient.subscribed).toBe(1);
+    video.currentSrc = '/api/v0/events/abc/video/00?media_token=T2&fmt=clean';
+    act(() => { video.dispatchEvent(new Event('loadstart')); });
+    expect(scrubClient.subscribed).toBe(1);
+    expect(scrubClient.unsubscribed).toBe(0);
+    expect(screen.getAllByTestId('player-seek-buffered')).toHaveLength(1);
+  });
+
+  it('clears the grey segments when the worker reports the bytes are gone', (ctx) => {
+    story(ctx, 'Gdy service worker został zatrzymany lub zastąpiony nową wersją i stracił pamięć, szare odcinki pobrane tylko przez podgląd znikają z paska.');
+    mount();
+    act(() => { scrubClient.emit?.({ total: 4000, ranges: [{ start: 3000, end: 4000 }] }); });
+    expect(screen.getAllByTestId('player-seek-buffered')).toHaveLength(1);
+    act(() => { scrubClient.emit?.({ total: 0, ranges: [] }); });
+    expect(screen.queryAllByTestId('player-seek-buffered')).toHaveLength(0);
   });
 });

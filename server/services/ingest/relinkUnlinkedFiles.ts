@@ -43,8 +43,10 @@ export async function relinkUnlinkedFiles(limit = 500): Promise<number> {
         fileSizeBytes: Number(o.fileSizeBytes),
       });
       if ((result.state === 'pending_sidecar' || result.state === 'ready') && 'eventId' in result) {
-        await publishThumbnailUnique(result.eventId, result.ownerId, { notify: false })
-          .catch(() => { /* redrive heals a lost publish */ });
+        for (const id of [result.eventId, ...(result.rehomedEventIds ?? [])]) {
+          await publishThumbnailUnique(id, result.ownerId, { notify: false })
+            .catch(() => { /* redrive heals a lost publish */ });
+        }
         healed += 1;
       }
       // still unrecognized: completeUpload wrote a new next_retry_at with

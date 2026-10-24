@@ -10,6 +10,7 @@ import { installEditionHooks, type EditionHooks } from './hooks.js';
 import { installMetricsRecorder, type MetricsRecorder } from './utils/metrics.js';
 import { installEditionGuards, type EditionGuards } from './middleware/editionGuards.js';
 import { installPushTransport } from './services/push/transport.js';
+import { installErrorReporter, type ErrorReporter } from './errorReporting.js';
 import type { PushTransport } from './services/push/types.js';
 
 /** A router (or bare handler) mounted at `path` behind optional middleware. */
@@ -44,6 +45,8 @@ export interface EditionFeatures {
   push: boolean;
   /** The MCP endpoint (/mcp + OAuth 2.1 AS) is deployed. */
   mcp: boolean;
+  /** Plans can be bought by anyone at sign-up (the pricing page links each plan to registration). */
+  paidPlans: boolean;
 }
 
 /** Role of the account created on an empty database (installer / first boot). */
@@ -82,11 +85,13 @@ export interface ServerExtensions {
   guards?: EditionGuards;
   /** How pushes reach devices (see services/push/types.ts). Absent ⇒ the Clipnest push relay. */
   pushTransport?: PushTransport;
+  /** Where caught errors and breadcrumbs go (see errorReporting.ts). Absent ⇒ dropped. */
+  errorReporter?: ErrorReporter;
 }
 
 /**
  * Install the edition's process-wide pieces (hooks, metrics recorder, role
- * guards, push transport). Called
+ * guards, push transport, error reporter). Called
  * by `createApp()` for the API and explicitly by every worker/cron entrypoint.
  */
 export function installEdition(ext: ServerExtensions): void {
@@ -94,4 +99,5 @@ export function installEdition(ext: ServerExtensions): void {
   installMetricsRecorder(ext.recorder);
   installEditionGuards(ext.guards);
   installPushTransport(ext.pushTransport);
+  installErrorReporter(ext.errorReporter);
 }

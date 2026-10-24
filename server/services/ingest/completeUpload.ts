@@ -25,7 +25,17 @@ const INGEST_LOCK_KEY1 = 0x696e6773;
 
 export type CompleteUploadResult =
   | { created: boolean; state: 'not_applicable' | 'unrecognized' }
-  | { created: boolean; state: 'pending_sidecar' | 'duplicate' | 'ready'; eventId: string; ownerId: number };
+  | {
+      created: boolean;
+      state: 'pending_sidecar' | 'duplicate' | 'ready';
+      eventId: string;
+      ownerId: number;
+      /** Events this upload CREATED by re-homing a displaced view out of a
+       *  merge-artifact slot. Their file was already linked (often already
+       *  `ready`), so nothing else ever queues a thumbnail for them — the caller
+       *  must publish one per id alongside `eventId`. */
+      rehomedEventIds?: string[];
+    };
 
 export interface CompleteUploadInput {
   userId: number;
@@ -67,7 +77,11 @@ export async function completeUpload(input: CompleteUploadInput): Promise<Comple
       ? null
       : 'unrecognized';
 
+  // Collects ids of events created by re-homing a displaced view (see
+  // CompleteUploadResult.rehomedEventIds). Reset per tx attempt.
+  let rehomed: string[] = [];
   const result = await withTx(async (tx) => {
+    rehomed = [];
     // 1. file_metadata upsert — idempotent on (s3_bucket, s3_key). A camera
     //    retransmission must not duplicate the row or reset its state.
     //    xmax = 0 is true only for freshly inserted rows (Fix A.1).
@@ -180,7 +194,7 @@ export async function completeUpload(input: CompleteUploadInput): Promise<Comple
       }
     }
 
-    const attachCtx = { ownerId: userId, s3Bucket, s3Key, ev, view, created, userUuid, userPrefix, profiles };
+    const attachCtx = { ownerId: userId, s3Bucket, s3Key, ev, view, created, userUuid, userPrefix, profiles, rehomed };
 
     // 4a. No partner → upsert our own event row + attach the view.
     if (!partner) {
@@ -248,6 +262,7 @@ export async function completeUpload(input: CompleteUploadInput): Promise<Comple
         userPrefix,
         profiles,
         camera: ev.camera,
+        rehomed,
       });
     }
     return attachView(tx, { eventId: ev.id, ...attachCtx });
@@ -266,6 +281,10 @@ export async function completeUpload(input: CompleteUploadInput): Promise<Comple
 
   // Strip the internal duplicateNotice field before returning to callers
   const { duplicateNotice: _dn, ...publicResult } = result as AttachResult;
+  if ('eventId' in publicResult) {
+    const extra = [...new Set(rehomed)].filter((id) => id !== publicResult.eventId);
+    if (extra.length > 0) return { ...publicResult, rehomedEventIds: extra };
+  }
   return publicResult as CompleteUploadResult;
 }
 
@@ -294,6 +313,7 @@ interface AttachArgs {
   userUuid: string;
   userPrefix: string;
   profiles: CameraProfile[];
+  rehomed: string[]; // out: ids of events created for displaced views
 }
 
 /** Parse a single rel path back to its natural CameraEvent (id + fields), or
@@ -363,9 +383,10 @@ async function healDisplacedPartner(
     userPrefix: string;
     profiles: CameraProfile[];
     camera: string;
+    rehomed: string[];
   },
 ): Promise<void> {
-  const { ownerId, keeperId, partnerId, userUuid, userPrefix, profiles, camera } = args;
+  const { ownerId, keeperId, partnerId, userUuid, userPrefix, profiles, camera, rehomed } = args;
 
   const retained = await tx.execute<{ view_id: string; video_rel_path: string }>(sql`
     SELECT view_id, video_rel_path FROM event_view_files WHERE event_id = ${partnerId}
@@ -405,12 +426,13 @@ async function healDisplacedPartner(
       // event, then overwrite the keeper's slot with the partner's path and
       // drop the (now-duplicated) partner row.
       const occView = occupantEvent.views[0];
-      const rehomed = await tx.execute(sql`
+      const rehomedIns = await tx.execute(sql`
         INSERT INTO events (id, camera, timestamp, date, owner_id)
         VALUES (${occupantEvent.id}, ${occupantEvent.camera}, ${occupantEvent.timestamp}, ${occupantEvent.date}, ${ownerId})
         ON CONFLICT (id) DO NOTHING
       `);
-      recordEventsCreated('merge_heal', originFor(userUuid), rehomed.rowCount ?? 0);
+      recordEventsCreated('merge_heal', originFor(userUuid), rehomedIns.rowCount ?? 0);
+      rehomed.push(occupantEvent.id);
       await tx.execute(sql`
         INSERT INTO event_view_files (event_id, view_id, video_rel_path)
         VALUES (${occupantEvent.id}, ${occView.id}, ${occView.videoRelPath})
@@ -451,6 +473,7 @@ async function healDisplacedPartner(
       continue;
     }
     // Partner's view belongs to a third standalone event: move it there.
+    rehomed.push(partnerEvent.id);
     await tx.execute(sql`
       INSERT INTO event_view_files (event_id, view_id, video_rel_path)
       VALUES (${partnerEvent.id}, ${pView.id}, ${pView.videoRelPath})
@@ -478,7 +501,7 @@ async function healDisplacedPartner(
 }
 
 async function attachView(tx: Tx, args: AttachArgs): Promise<AttachResult> {
-  const { eventId, ownerId, s3Bucket, s3Key, ev, view, created, userUuid, userPrefix, profiles } = args;
+  const { eventId, ownerId, s3Bucket, s3Key, ev, view, created, userUuid, userPrefix, profiles, rehomed } = args;
   const ins = await tx.execute<{ event_id: string }>(sql`
     INSERT INTO event_view_files (event_id, view_id, video_rel_path)
     VALUES (${eventId}, ${view.id}, ${view.videoRelPath})
@@ -532,6 +555,7 @@ async function attachView(tx: Tx, args: AttachArgs): Promise<AttachResult> {
       ON CONFLICT (id) DO NOTHING
     `);
     recordEventsCreated('merge_heal', originFor(userUuid), occRehomed.rowCount ?? 0);
+    rehomed.push(occupantEvent.id);
     await tx.execute(sql`
       INSERT INTO event_view_files (event_id, view_id, video_rel_path)
       VALUES (${occupantEvent.id}, ${occView.id}, ${occView.videoRelPath})

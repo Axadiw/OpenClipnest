@@ -1,9 +1,9 @@
 // server/db/queries/storage.ts
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, sql, isNull, isNotNull } from 'drizzle-orm';
 import { db, withTx, LOCK_NS_QUOTA, userLockKey } from '../index.js';
 import {
   uploadEvents, storageReconciliationRuns, storageDiskCorrections, storageOrphanObjects,
-  userScanState, users, plans,
+  userScanState, users, plans, contentDeletions,
   type StorageOrphanObject,
 } from '../schema/index.js';
 import type { UserQuota } from '../../types.js';
@@ -474,27 +474,46 @@ export async function withUserAdvisoryLock<T>(
   const { pool: rawPool } = await import('../index.js');
   const client = await rawPool.connect();
   let acquired = false;
+  // pg-pool drops its own 'error' listener on checkout, and this client sits
+  // idle for as long as `fn` runs (minutes, for a content wipe). Without a
+  // listener a server-side session end (Postgres restart, network blip) is an
+  // unhandled 'error' event that takes the process down. The session lock dies
+  // with the connection, so all we can do is log it and destroy the client.
+  let connectionError: Error | null = null;
+  const onError = (err: Error) => {
+    connectionError = err;
+    console.error('withUserAdvisoryLock: connection error while holding the lock:', err.message);
+  };
+  client.on('error', onError);
   // Namespaced under LOCK_NS_QUOTA so this lock doesn't head-of-line-block the
   // scanner's LOCK_NS_EVENTS lock on the same userId. The two paths touch
   // different rows and never need to mutually exclude.
   const key = userLockKey(LOCK_NS_QUOTA, userId).toString();
+  let releaseError: Error | undefined;
   try {
     const r = await client.query('SELECT pg_try_advisory_lock($1::bigint) AS locked', [key]);
     acquired = !!r.rows[0]?.locked;
     if (!acquired) return null;
     return await fn();
+  } catch (e) {
+    // A query on this client failed (e.g. the try-lock itself): don't hand
+    // a possibly broken connection back to the pool.
+    if (!acquired) releaseError = e instanceof Error ? e : new Error(String(e));
+    throw e;
   } finally {
-    if (acquired) {
+    if (acquired && !connectionError) {
       await client
         .query('SELECT pg_advisory_unlock($1::bigint)', [key])
         .catch((e) => {
-          console.error(
-            'withUserAdvisoryLock: unlock failed:',
-            e instanceof Error ? e.message : e,
-          );
+          // The connection may still hold the session lock: returning it to
+          // the pool would keep this user's lock stuck for the life of the
+          // process. Destroy it instead — Postgres frees the lock with it.
+          releaseError = e instanceof Error ? e : new Error(String(e));
+          console.error('withUserAdvisoryLock: unlock failed:', releaseError.message);
         });
     }
-    client.release();
+    client.removeListener('error', onError);
+    client.release(connectionError ?? releaseError);
   }
 }
 
@@ -514,6 +533,34 @@ export async function getUsersForScan(): Promise<ScannerUser[]> {
     .from(users)
     .where(and(eq(users.isAdmin, false), eq(users.deletionStatus, 'active')));
   return rows.map((r) => ({ id: r.id, uuid: r.uuid, encryptionSalt: r.encryptionSalt }));
+}
+
+/**
+ * Accounts whose recordings are being deleted right now (a content deletion
+ * started and not finished). The storage reconciler skips them: re-creating
+ * rows from objects that the deletion has not reached yet would bring the
+ * recordings back into the list and the usage counter.
+ */
+export async function getUserIdsWithUnfinishedContentDeletion(): Promise<Set<number>> {
+  const rows = await db
+    .select({ userId: contentDeletions.userId })
+    .from(contentDeletions)
+    .where(and(isNotNull(contentDeletions.startedAt), isNull(contentDeletions.finishedAt)));
+  return new Set(rows.map((r) => r.userId));
+}
+
+/**
+ * The same question for one account, asked by the reconciler under the
+ * account's LOCK_NS_QUOTA lock right before it reads that account's objects:
+ * a deletion that started after the run's initial read must still be seen.
+ */
+export async function hasUnfinishedContentDeletion(userId: number): Promise<boolean> {
+  const rows = await db
+    .select({ userId: contentDeletions.userId })
+    .from(contentDeletions)
+    .where(and(eq(contentDeletions.userId, userId), isNotNull(contentDeletions.startedAt), isNull(contentDeletions.finishedAt)))
+    .limit(1);
+  return rows.length > 0;
 }
 
 // --- User scan state (Fix 1: incremental scanner) ---

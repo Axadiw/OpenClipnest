@@ -65,7 +65,6 @@ const {
   };
 });
 
-vi.mock('./sentry.js', () => ({}));
 
 vi.mock('./db/index.js', () => ({
   initDb: (...a: unknown[]) => mockInitDb(...a),

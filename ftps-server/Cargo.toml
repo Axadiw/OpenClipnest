@@ -9,7 +9,7 @@ unftp-core = "0.1"
 tokio = { version = "1", features = ["full"] }
 # default-features disabled to drop the SDK's legacy default HTTPS connector
 # (rustls 0.21 / webpki 0.101 — RUSTSEC); we pin our own rustls-aws-lc client.
-aws-sdk-s3 = { version = "1", default-features = false, features = ["sigv4a", "http-1x", "rt-tokio"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["http-1x", "rt-tokio"] }
 aws-config = { version = "1", default-features = false, features = ["rt-tokio", "credentials-process", "sso"] }
 aws-credential-types = "1"
 aws-smithy-types = "1"

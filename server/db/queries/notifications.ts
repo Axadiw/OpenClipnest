@@ -53,6 +53,12 @@ function pushTitleForKind(kind: NotificationKind): string {
       return 'Duplicate recording';
     case 'user_banned':
       return 'Account notice';
+    case 'plan_change_cancelled':
+      return 'Plan change cancelled';
+    case 'content_deletion_scheduled':
+      return 'Recordings will be deleted';
+    case 'content_deleted':
+      return 'Recordings deleted';
     default:
       return 'Clipnest';
   }
@@ -75,7 +81,7 @@ export async function createNotification(
   // and resolves devices, so we publish for EVERY notification regardless of
   // the user's prefs — the consumer is the policy point. Lazy import avoids a
   // static cycle (streamsClient → redis; this module is imported very early).
-  import('../../services/streamsClient.js')
+  const fanOut = import('../../services/streamsClient.js')
     .then(({ publishPush }) =>
       publishPush({
         userId: String(userId),
@@ -92,8 +98,26 @@ export async function createNotification(
         err instanceof Error ? err.message : String(err),
       ),
     );
+  pendingFanOuts.add(fanOut);
+  void fanOut.finally(() => pendingFanOuts.delete(fanOut));
 
   return mapNotification(row);
+}
+
+// Fan-outs still in flight. A long-running process never needs this; a
+// one-shot job (a CronJob that closes Redis and exits) awaits them first so
+// the pushes it created are not dropped at exit.
+const pendingFanOuts = new Set<Promise<unknown>>();
+
+/** Wait (at most `timeoutMs`) for the push fan-outs of notifications created so far. Never throws. */
+export async function flushNotificationPushes(timeoutMs = 5000): Promise<void> {
+  if (pendingFanOuts.size === 0) return;
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([
+    Promise.allSettled([...pendingFanOuts]),
+    new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); }),
+  ]);
+  clearTimeout(timer);
 }
 
 export async function listNotifications(

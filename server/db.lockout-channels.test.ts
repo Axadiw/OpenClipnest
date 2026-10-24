@@ -4,7 +4,7 @@
  * The web sign-in ('web') and camera FTP/FTPS logins ('ftp') keep separate
  * failure counters and lockouts, so a camera retrying an outdated password can
  * never lock its owner out of the web, and the other way round. Runs on the
- * real migrated schema (scratch schema per run) — the per-IP spray throttle
+ * real migrated schema (a scratch database per run) — the per-IP spray throttle
  * has its own suite in db.ip-throttle.test.ts.
  *
  * Real Postgres only. Set DATABASE_URL (CI does); the suite skips otherwise.
@@ -20,21 +20,20 @@ import {
   recordFailedLoginByIp, isIpLocked, isUserBanned, listActiveBans,
   lockoutSeconds, LOCKOUT_THRESHOLD, LOCKOUT_CAP_SECONDS, LOCKOUT_CAPPED_TIERS, LOCKOUT_CEILING_SECONDS,
 } from './db/queries/lockout.js';
-import { updateUserPasswordByInternalId } from './db/queries/users.js';
+import { updateUserPasswordByInternalId, getAllUsers } from './db/queries/users.js';
+import { isAccessLocked, setAccessLocked } from './db/queries/access.js';
 import { syncAccountPasswordFromEnv } from './services/bootstrap.js';
 import { hashPassword } from './services/auth.js';
 import { resetUserBan } from './scripts/reset-user-ban.js';
 import { __setPoolForTest } from './db/index.js';
-import { migrateToSchema } from './testing/migrate-schema.js';
+import { createScratchDb, type ScratchDb } from './testing/scratch-db.js';
 import { story } from './testing/story.js';
 
 vi.setConfig({ testTimeout: 30_000 });
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const MIGRATIONS_DIR = join(__dirname, 'db', 'migrations');
 const TEST_URL = process.env.MIGRATE_TEST_DATABASE_URL ?? process.env.DATABASE_URL;
 const describeIfDb = TEST_URL ? describe : describe.skip;
-const SCHEMA = `test_lockout_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 describe('lockoutSeconds', () => {
   const minutes = (channel: 'web' | 'ftp', tiers: number[]) => tiers.map((t) => lockoutSeconds(channel, t) / 60);
@@ -61,19 +60,16 @@ describe('lockoutSeconds', () => {
 
 describeIfDb('login lockouts per channel', () => {
   let pool: pg.Pool;
+  let scratch: ScratchDb | undefined;
 
   beforeAll(async () => {
-    pool = new pg.Pool({ connectionString: TEST_URL, max: 5, options: `-c search_path="${SCHEMA}",public` });
-    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${SCHEMA}"`);
-    await migrateToSchema(pool, SCHEMA, MIGRATIONS_DIR);
+    scratch = await createScratchDb({ max: 5 });
+    pool = scratch.pool;
     __setPoolForTest(pool);
   }, 90_000);
 
   afterAll(async () => {
-    if (pool) await pool.end();
-    const cleanup = new pg.Pool({ connectionString: TEST_URL, max: 1 });
-    await cleanup.query(`DROP SCHEMA IF EXISTS "${SCHEMA}" CASCADE`);
-    await cleanup.end();
+    await scratch?.drop();
   });
 
   beforeEach(async () => {
@@ -379,8 +375,7 @@ describeIfDb('login lockouts per channel', () => {
         timeout: 60_000,
         env: {
           ...process.env,
-          DATABASE_URL: TEST_URL,
-          PGOPTIONS: `-c search_path=${SCHEMA},public`,
+          DATABASE_URL: scratch!.url,
           JWT_SECRET: 'cli-test-secret-cli-test-secret-0123456789',
           RUN_MIGRATE_AT_STARTUP: 'false',
         },
@@ -402,6 +397,56 @@ describeIfDb('login lockouts per channel', () => {
       expect(r.stdout).toMatch(/Cleared 1 active ban\(s\)/);
       expect((await isUserLocked(u.id, 'ftp')).locked).toBe(false);
       expect(await counters(u.id)).toEqual({ web: 0, webTier: 0, ftp: 0, ftpTier: 0 });
+    });
+  });
+
+  // Locked account access (users.access_locked_at) shares this schema rather
+  // than migrating one of its own: every DB test file migrates a scratch
+  // schema concurrently on CI, and one more pushed the slowest past their
+  // hook timeouts.
+  describe('account access lock', () => {
+    it('a fresh account (even without a plan) is not locked', async (ctx) => {
+      story(ctx, 'Nowe konto bez planu nie jest zablokowane — blokada to osobna, jawna flaga, a nie brak planu.');
+      const u = await seedUser();
+      expect(await isAccessLocked(u.id)).toBe(false);
+    });
+
+    it('lock then unlock round-trips and stamps the lock time', async (ctx) => {
+      story(ctx, 'Admin blokuje konto, a potem je odblokowuje — flaga zapisuje moment blokady i znika po odblokowaniu.');
+      const u = await seedUser();
+      expect(await setAccessLocked(u.id, true)).toBe(true);
+      expect(await isAccessLocked(u.id)).toBe(true);
+      const { rows } = await pool.query('SELECT access_locked_at FROM users WHERE id = $1', [u.id]);
+      expect(rows[0].access_locked_at).toBeInstanceOf(Date);
+      expect(await setAccessLocked(u.id, false)).toBe(true);
+      expect(await isAccessLocked(u.id)).toBe(false);
+    });
+
+    it('locking an already-locked account keeps the original lock time', async (ctx) => {
+      story(ctx, 'Ponowna blokada nie przesuwa daty — od pierwszej blokady liczy się później 7 dni do usunięcia nagrań.');
+      const u = await seedUser();
+      const lockedAt = async () =>
+        ((await pool.query('SELECT access_locked_at FROM users WHERE id = $1', [u.id])).rows[0].access_locked_at as Date).getTime();
+      await setAccessLocked(u.id, true);
+      const first = await lockedAt();
+      await new Promise((r) => setTimeout(r, 20));
+      await setAccessLocked(u.id, true);
+      expect(await lockedAt()).toBe(first);
+    });
+
+    it('unknown user: isAccessLocked is false, setAccessLocked reports no row', async (ctx) => {
+      story(ctx, 'Zapytanie o nieistniejące konto nie rzuca wyjątkiem.');
+      expect(await isAccessLocked(999_999)).toBe(false);
+      expect(await setAccessLocked(999_999, true)).toBe(false);
+    });
+
+    it('the admin user list reports accessLocked', async (ctx) => {
+      story(ctx, 'Lista użytkowników admina pokazuje, które konta są zablokowane.');
+      const u = await seedUser();
+      await setAccessLocked(u.id, true);
+      expect((await getAllUsers()).find((x) => x.email === u.email)?.accessLocked).toBe(true);
+      await setAccessLocked(u.id, false);
+      expect((await getAllUsers()).find((x) => x.email === u.email)?.accessLocked).toBe(false);
     });
   });
 });

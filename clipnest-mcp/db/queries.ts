@@ -29,6 +29,9 @@ export {
 // The MCP bearer path reads it to reject grants whose credentials were rotated.
 export { getTokenGeneration } from '../../server/db/queries/users.js';
 
+// A locked account keeps its tokens but may not use them.
+export { isAccessLocked } from '../../server/db/queries/access.js';
+
 export type {
   CreateClientInput,
   OauthClientRow as OauthClient,

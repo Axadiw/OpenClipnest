@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
+  check,
   index,
   integer,
   pgTable,
@@ -22,9 +23,14 @@ import { plans, users } from './users.js';
 // what flips `active` for it. (OAuth signup is the exception — the provider
 // already asserted the address, so those accounts activate immediately.)
 //
-// Codes never expire. `revoked_at` is the admin's manual off-switch and is
-// only allowed while the code is still unused, which keeps the `used_by` link
-// to a redeemer permanent once it exists.
+// A code carries two limits, both set when the batch is generated:
+// `expires_at` — the code cannot be redeemed after it (an expired code is
+// refused exactly like an unknown one); and `plan_duration_days` — the granted
+// plan ends that many days after the redemption (users.plan_expires_at).
+// Codes from before these columns have both NULL = no limit.
+// `revoked_at` is the admin's manual off-switch and is only allowed while the
+// code is still unused, which keeps the `used_by` link to a redeemer
+// permanent once it exists.
 // ---------------------------------------------------------------------------
 export const inviteCodes = pgTable(
   'invite_codes',
@@ -46,6 +52,10 @@ export const inviteCodes = pgTable(
     usedAt: timestamp('used_at', { withTimezone: true }),
     usedBy: integer('used_by').references(() => users.id, { onDelete: 'set null' }),
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    // NULL = no redemption deadline (codes from before migration 0024).
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    // NULL = the granted plan has no end.
+    planDurationDays: integer('plan_duration_days'),
   },
   (table) => ({
     // The email-verification path asks "did this user come in via an invite?".
@@ -56,6 +66,10 @@ export const inviteCodes = pgTable(
     availableIdx: index('idx_invite_codes_available')
       .on(table.planId)
       .where(sql`${table.usedAt} IS NULL AND ${table.revokedAt} IS NULL`),
+    planDurationDaysCheck: check(
+      'invite_codes_plan_duration_days_check',
+      sql`${table.planDurationDays} > 0`,
+    ),
   }),
 );
 

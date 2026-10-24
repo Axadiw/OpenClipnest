@@ -1,4 +1,3 @@
-import '../server/sentry.js';
 import express from 'express';
 import helmet from 'helmet';
 import { MCP_CONFIG } from './config.js';
@@ -12,7 +11,7 @@ import { mountDiscovery } from './oauth/discovery.js';
 import { mountMcpTransport } from './mcp/transport.js';
 import { initDb, pingDb } from '../server/db/index.js';
 import { getRedis } from '../server/utils/redis.js';
-import { setupSentryExpressErrorHandler } from '../server/sentry.js';
+import { setupErrorReportingExpressHandler } from '../server/errorReporting.js';
 
 const app = express();
 
@@ -38,8 +37,8 @@ mountToken(app);
 mountRevoke(app);
 mountMcpTransport(app);
 
-// Sentry error handler must come after all routes.
-setupSentryExpressErrorHandler(app);
+// The error-reporting handler must come after all routes.
+setupErrorReportingExpressHandler(app);
 
 (async () => {
   // RUN_MIGRATE_AT_STARTUP is intentionally left unset (defaults to false) so

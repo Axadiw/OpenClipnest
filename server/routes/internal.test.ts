@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { story } from '../testing/story.js';
@@ -50,6 +50,7 @@ const {
   mockCompleteUpload,
   mockPublishThumbnailUnique,
   mockClearThumbnailDedup,
+  mockIsAccessLocked,
 } = vi.hoisted(() => ({
   TEST_INTERNAL_KEY: 'test-internal-key-12345',
   mockGetUserByEmail: vi.fn(),
@@ -79,6 +80,7 @@ const {
   mockCompleteUpload: vi.fn().mockResolvedValue({ created: true, state: 'pending_sidecar', eventId: 'evt-001', ownerId: 42 }),
   mockPublishThumbnailUnique: vi.fn().mockResolvedValue('published'),
   mockClearThumbnailDedup: vi.fn().mockResolvedValue(undefined),
+  mockIsAccessLocked: vi.fn((..._a: unknown[]) => Promise.resolve(false)),
 }));
 
 vi.mock('../config.js', () => ({
@@ -108,6 +110,8 @@ vi.mock('../db/queries/events.js', () => ({
   getRecentUploadAvgBytes: (...args: unknown[]) => mockGetRecentUploadAvgBytes(...args),
   trackFileUpload: (...args: unknown[]) => mockTrackFileUpload(...args),
 }));
+vi.mock('../db/queries/access.js', () => ({ isAccessLocked: (...a: unknown[]) => mockIsAccessLocked(...a) }));
+
 vi.mock('../db/queries/lockout.js', () => ({
   isUserLocked: (...args: unknown[]) => mockIsUserLocked(...args),
   isUserBanned: (...args: unknown[]) => mockIsUserBanned(...args),
@@ -575,7 +579,7 @@ describe('Internal API routes', () => {
         .set('X-Internal-Key', TEST_INTERNAL_KEY);
 
       expect(res.status).toBe(200);
-      expect(res.body).toEqual(fakeQuota);
+      expect(res.body).toEqual({ ...fakeQuota, uploadsBlocked: false });
       expect(mockCheckAndResetTransfer).toHaveBeenCalledWith(42);
       expect(mockGetUserQuota).toHaveBeenCalledWith(42);
     });
@@ -1049,6 +1053,25 @@ describe('Internal API routes', () => {
       expect(mockRecordUpload).toHaveBeenCalledWith(fakeUser.internalId, 12_345);
     });
 
+    it('publishes a thumbnail job for every event the ingest re-homed out of a merge-artifact slot', async (ctx) => {
+      story(ctx, 'Kamera dual-view: zoom Cam_01_T+21s trafił najpierw do eventu T (merge w oknie 30 s). Gdy kilka minut później przyszedł prawdziwy Cam_01_T, slot się wyleczył, a T+21s dostał nowy event — bez joba miniaturki, bo plik był już ready i redrive go nie widział. Teraz file-complete publikuje job także dla przeniesionego eventu (bez powiadomienia — plik był już ogłoszony).');
+      mockGetUserByUuid.mockReturnValue(fakeUser);
+      mockAtomicClaimDiskSpace.mockResolvedValue({ claimed: true, autoDelete: false });
+      mockCompleteUpload.mockResolvedValue({
+        created: true, state: 'pending_sidecar', eventId: 'evt-keeper', ownerId: 42,
+        rehomedEventIds: ['evt-rehomed'],
+      });
+
+      const res = await request(app)
+        .post(`/internal/users/${fakeUser.id}/file-complete`)
+        .set('X-Internal-Key', TEST_INTERNAL_KEY)
+        .send(validBody);
+
+      expect(res.status).toBe(200);
+      expect(mockPublishThumbnailUnique).toHaveBeenCalledWith('evt-keeper', 42, { notify: true });
+      expect(mockPublishThumbnailUnique).toHaveBeenCalledWith('evt-rehomed', 42, { notify: false });
+    });
+
     it('carries the truncated flag through to the ingest', async (ctx) => {
       story(ctx, 'FTPS zapisuje teraz bajty, które dotarły przed zerwaniem połączenia, zamiast je wyrzucać — ale wtedy w bazie ląduje krótszy klip niż ten, który nagrała kamera. Bez tej flagi pół nagrania byłoby nie do odróżnienia od kompletnego.');
       mockGetUserByUuid.mockReturnValue(fakeUser);
@@ -1139,6 +1162,102 @@ describe('Internal API routes', () => {
       expect(mockHeadObject).toHaveBeenCalledTimes(4);
       expect(mockDeleteObject).toHaveBeenCalledWith('clipnest-recordings', validBody.s3Key);
       expect(mockCompleteUpload).not.toHaveBeenCalled();
+    });
+  });
+
+  // ---------------------------------------------------------------
+  // Locked account: web sign-in stays, cameras do not.
+  describe('locked account', () => {
+    beforeEach(() => mockIsAccessLocked.mockResolvedValue(true));
+    afterEach(() => mockIsAccessLocked.mockResolvedValue(false));
+
+    const verify = () => request(app)
+      .post('/internal/auth/verify')
+      .set('X-Internal-Key', TEST_INTERNAL_KEY)
+      .send({ username: 'testuser@test.com', password: 'correctPassword1' });
+
+    it('auth/verify refuses the camera login with reason access_locked', async (ctx) => {
+      story(ctx, 'Kamera zablokowanego konta nie zaloguje się po FTP — serwer odpowiada valid:false z powodem access_locked, a FTPS zwraca kamerze 530.');
+      mockGetUserByEmail.mockReturnValue(fakeUser);
+      mockVerifyPassword.mockResolvedValue(true);
+
+      const res = await verify();
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ valid: false, reason: 'access_locked' });
+      expect(mockResetLoginAttempts).not.toHaveBeenCalled();
+    });
+
+    it('a wrong password on a locked account is still a plain failure', async (ctx) => {
+      story(ctx, 'Złe hasło na zablokowanym koncie wygląda jak każde złe hasło — nie zdradzamy stanu konta bez poprawnego hasła.');
+      mockGetUserByEmail.mockReturnValue(fakeUser);
+      mockVerifyPassword.mockResolvedValue(false);
+
+      const res = await request(app)
+        .post('/internal/auth/verify')
+        .set('X-Internal-Key', TEST_INTERNAL_KEY)
+        .send({ username: 'testuser@test.com', password: 'wrongPassword1' });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ valid: false });
+    });
+
+    it('transfer-check reports not within limit', async (ctx) => {
+      story(ctx, 'Pobieranie przez FTP z zablokowanego konta jest odrzucane jak przy wyczerpanym transferze.');
+      mockGetUserByUuid.mockReturnValue(fakeUser);
+
+      const res = await request(app)
+        .post(`/internal/users/${fakeUser.id}/transfer-check`)
+        .set('X-Internal-Key', TEST_INTERNAL_KEY)
+        .send();
+
+      expect(res.status).toBe(200);
+      expect(res.body.withinLimit).toBe(false);
+    });
+
+    it('quota reports uploadsBlocked', async (ctx) => {
+      story(ctx, 'Odpowiedź quota mówi wprost, że wgrywanie jest zablokowane.');
+      mockGetUserByUuid.mockReturnValue(fakeUser);
+
+      const res = await request(app)
+        .get(`/internal/users/${fakeUser.id}/quota`)
+        .set('X-Internal-Key', TEST_INTERNAL_KEY);
+
+      expect(res.status).toBe(200);
+      expect(res.body.uploadsBlocked).toBe(true);
+    });
+
+    it('file-complete refuses with 507 and claims nothing', async (ctx) => {
+      story(ctx, 'Plik wgrany w sesji otwartej przed blokadą nie zostaje przyjęty — 507, bez naliczania miejsca.');
+      mockGetUserByUuid.mockReturnValue(fakeUser);
+
+      const res = await request(app)
+        .post(`/internal/users/${fakeUser.id}/file-complete`)
+        .set('X-Internal-Key', TEST_INTERNAL_KEY)
+        .send({
+          s3Bucket: 'clipnest-recordings',
+          s3Key: `${fakeUser.id}/Cam01/2026-04-29/clip.mp4`,
+          originalFilename: 'clip.mp4',
+          fileSizeBytes: 12_345,
+        });
+
+      expect(res.status).toBe(507);
+      expect(res.body).toEqual({ ok: false, claimed: false, reason: 'access_locked' });
+      expect(mockAtomicClaimDiskSpace).not.toHaveBeenCalled();
+      expect(mockUpdateDiskUsage).not.toHaveBeenCalled();
+      expect(mockCompleteUpload).not.toHaveBeenCalled();
+    });
+
+    it('an unlocked account logs in immediately after the lock is lifted', async (ctx) => {
+      story(ctx, 'Po odblokowaniu konta kamera loguje się przy następnej próbie — decyzja logowania nie jest nigdzie cache-owana.');
+      mockGetUserByEmail.mockReturnValue(fakeUser);
+      mockVerifyPassword.mockResolvedValue(true);
+
+      expect((await verify()).body.valid).toBe(false);
+      mockIsAccessLocked.mockResolvedValue(false);
+      const res = await verify();
+
+      expect(res.body.valid).toBe(true);
     });
   });
 });

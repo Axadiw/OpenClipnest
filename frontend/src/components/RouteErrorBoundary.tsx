@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { useRouteError } from 'react-router-dom';
-import * as Sentry from '@sentry/react';
+import { captureException } from '../lib/errorReporting';
 import { getActiveLanguage, type Language } from '../i18n';
 import { isChunkLoadError, shouldReloadOnce } from '../utils/chunkReload';
 
@@ -90,7 +90,7 @@ export function RouteErrorBoundary() {
     }
     // Route loader/render errors bypass the class ErrorBoundary in main.tsx,
     // so report them here rather than losing them.
-    Sentry.captureException(error);
+    captureException(error);
   }, [isChunk, error]);
 
   if (reloading) {

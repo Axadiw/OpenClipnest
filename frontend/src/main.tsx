@@ -5,6 +5,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { router } from './routes';
 import { edition } from './edition';
 import { installChunkReloadHandler } from './utils/chunkReload';
+import { registerScrubServiceWorker } from './lib/scrubCache/client';
 import './fonts/fonts.css';
 import './index.css';
 
@@ -17,6 +18,10 @@ installChunkReloadHandler();
 // Edition boot: error monitoring / analytics in Clipnest Cloud, nothing on a
 // self-hosted install.
 edition.init();
+
+// Service worker: app-shell cache + the in-memory video range cache the players and the
+// scrub preview share. Registered after `load`; failures leave playback on the network.
+registerScrubServiceWorker();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

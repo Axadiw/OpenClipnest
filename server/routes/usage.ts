@@ -6,6 +6,7 @@ import {
 import { getUserByUuid } from '../db/queries/users.js';
 import { evictUserToFitPlan } from '../services/quotaTidy.js';
 import { runRetentionForUser } from '../services/autoDeleteRetention.js';
+import { isAccessLocked } from '../db/queries/access.js';
 import { requireOwner } from '../middleware/editionGuards.js';
 
 const router = Router();
@@ -45,6 +46,7 @@ router.get('/', requireOwner, async (req, res) => {
       percent: transferPercent,
       resetAt: quota.transferResetAt,
     },
+    accessLocked: await isAccessLocked(userId),
   });
 });
 

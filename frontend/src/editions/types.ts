@@ -37,6 +37,18 @@ export interface PasskeyLoginSlot {
   BackupStage: ComponentType<{ email: string; onCancel: () => void }>;
 }
 
+/** An extra tab an edition adds to the Settings page (owner accounts only). */
+export interface SettingsTabSlot {
+  /** Route path under /settings, also the nav link target. */
+  path: string;
+  /** Translation key of the nav label. */
+  labelKey: string;
+  element: ReactNode;
+  icon?: ReactNode;
+  /** Hook deciding whether the tab is listed (default: always). */
+  useVisible?: () => boolean;
+}
+
 export interface FrontendEdition {
   name: 'selfhost' | 'cloud';
   /** Root-level routes: marketing, legal, help, email flows … */
@@ -70,6 +82,10 @@ export interface FrontendEdition {
    * configuration, not edited in the app.
    */
   ProfileTab: ComponentType | null;
+  /** Extra Settings tabs (owner accounts). Empty/absent ⇒ the core tabs only. */
+  settingsTabs?: SettingsTabSlot[];
+  /** Rendered inside the access-locked banner as a call to action. */
+  LockedBannerAction?: ComponentType | null;
   /** Mounted inside the authed shell next to the player (cloud: account modals). */
   ShellExtras: ComponentType | null;
   /** Extra translations merged over the core catalogs at boot. */

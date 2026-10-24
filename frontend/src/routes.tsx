@@ -103,6 +103,7 @@ export const router = createBrowserRouter([
                   { path: 'storage', element: lazyEl(<StorageTab />) },
                   ...(edition.ProfileTab ? [{ path: 'profile', element: lazyEl(<edition.ProfileTab />) }] : []),
                   { path: 'mcp-clients', element: lazyEl(<McpClientsTab />) },
+                  ...(edition.settingsTabs ?? []).map((tab) => ({ path: tab.path, element: tab.element })),
                 ],
               },
 

@@ -142,7 +142,8 @@ describe('McpClientsTab', () => {
 
     render(<McpClientsTab />);
     const revokeAll = await screen.findByRole('button', { name: 'settings.mcpClients.revokeAll' });
-    expect(revokeAll).toBeEnabled();
+    // The button is rendered disabled while the list loads; wait for the data.
+    await waitFor(() => expect(revokeAll).toBeEnabled());
 
     fireEvent.click(revokeAll);
 
@@ -177,6 +178,7 @@ describe('McpClientsTab', () => {
     });
     render(<McpClientsTab />);
     const revokeAll = await screen.findByRole('button', { name: 'settings.mcpClients.revokeAll' });
+    await waitFor(() => expect(revokeAll).toBeEnabled());
     fireEvent.click(revokeAll);
     expect(window.confirm).toHaveBeenCalled();
     expect(mockRevokeMcpClient).not.toHaveBeenCalled();

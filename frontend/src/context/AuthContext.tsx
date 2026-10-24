@@ -8,6 +8,8 @@ interface AuthContextValue {
   user: User | null;
   login: (token: string, refreshToken: string, user: User, remember?: boolean) => void;
   logout: () => void;
+  /** Ends every session of the account, this one included. False when the server did not confirm it (nothing changed locally then). */
+  logoutEverywhere: () => Promise<boolean>;
   isAuthenticated: boolean;
   isAdmin: boolean;
 }
@@ -17,6 +19,7 @@ const AuthContext = createContext<AuthContextValue>({
   user: null,
   login: () => {},
   logout: () => {},
+  logoutEverywhere: async () => false,
   isAuthenticated: false,
   isAdmin: false,
 });
@@ -44,12 +47,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(newUser);
   }, []);
 
-  const logout = useCallback(() => {
-    // Fire-and-forget server-side revocation (bumps token_generation) BEFORE we
-    // drop the local token — apiLogout needs the Authorization header to still
-    // be present. Non-blocking: a failed request must never strand the local
-    // sign-out below.
-    void apiLogout();
+  const clearSession = useCallback(() => {
     clearToken();
     // The account timezone is cached in localStorage to keep the timeline's
     // first frame stable across mounts. It belongs to the account, not the
@@ -60,12 +58,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   }, []);
 
+  const logout = useCallback(() => {
+    // Fire-and-forget: ends this device's session on the server; the other
+    // devices stay signed in. apiLogout reads the tokens before clearSession
+    // drops them, and a failed request must never strand the local sign-out.
+    void apiLogout('device');
+    clearSession();
+  }, [clearSession]);
+
+  const logoutEverywhere = useCallback(async () => {
+    const ok = await apiLogout('all');
+    if (ok) clearSession();
+    return ok;
+  }, [clearSession]);
+
   return (
     <AuthContext.Provider value={{
       token,
       user,
       login,
       logout,
+      logoutEverywhere,
       isAuthenticated: !!token,
       isAdmin: user?.isAdmin ?? false,
     }}>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import * as Sentry from '@sentry/react';
+import { addBreadcrumb } from '../lib/errorReporting';
 
 // Default backoff schedule (gap from previous attempt, in seconds).
 // Total span: 10+30+60+90+120+150+180+210+240+270 = 1360 s ≈ 22 min — a long
@@ -128,7 +128,7 @@ export function useVideoStallRetry(
     setTotalAttempts(totalAttemptsRef.current);
     setRetrying(true);
 
-    Sentry.addBreadcrumb({
+    addBreadcrumb({
       category: 'video',
       message: 'stall-retry',
       data: { src: baseUrl, attempt, code: errCode },

@@ -10,6 +10,7 @@ import {
   serial,
   text,
   timestamp,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
 
 // ---------------------------------------------------------------------------
@@ -46,8 +47,28 @@ export const plans = pgTable('plans', {
   name: text('name').notNull().unique(),
   diskSpaceBytes: bigint('disk_space_bytes', { mode: 'number' }).notNull(),
   monthlyTransferBytes: bigint('monthly_transfer_bytes', { mode: 'number' }).notNull(),
+  // Catalog metadata: listed publicly, display order, the price a customer
+  // pays (tax included, minor units) and the payment provider's price key.
+  isPublic: boolean('is_public').notNull().default(false),
+  sortOrder: integer('sort_order').notNull().default(0),
+  monthlyPriceCents: integer('monthly_price_cents'),
+  currency: text('currency').notNull().default('EUR'),
+  priceLookupKey: text('price_lookup_key'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
+}, (table) => ({
+  priceLookupKeyUnique: uniqueIndex('plans_price_lookup_key_unique')
+    .on(table.priceLookupKey)
+    .where(sql`${table.priceLookupKey} IS NOT NULL`),
+  // Sold (price and key) or granted by hand only (neither); public => sold.
+  pricePairCheck: check(
+    'plans_price_pair_check',
+    sql`(${table.monthlyPriceCents} IS NULL) = (${table.priceLookupKey} IS NULL)`,
+  ),
+  publicNeedsPriceCheck: check(
+    'plans_public_needs_price_check',
+    sql`NOT ${table.isPublic} OR ${table.priceLookupKey} IS NOT NULL`,
+  ),
+}));
 
 // ---------------------------------------------------------------------------
 // users
@@ -116,6 +137,20 @@ export const users = pgTable(
     })
       .notNull()
       .default('auto'),
+    // Locked access: the account keeps its sign-in, list and thumbnails, but
+    // playback, downloads, deletes, uploads, FTP and MCP are refused. NULL =
+    // full access; the value is when the lock started.
+    accessLockedAt: timestamp('access_locked_at', { withTimezone: true }),
+    // Locked by an administrator. Independent of access_locked_at (which the
+    // plan rules set and lift): only an administrator sets or clears this one.
+    adminLockedAt: timestamp('admin_locked_at', { withTimezone: true }),
+    // An administrator set this plan on purpose. While set (and plan_expires_at
+    // has not passed) nothing but an administrator changes the plan.
+    planOverrideAt: timestamp('plan_override_at', { withTimezone: true }),
+    // Where the current plan came from (admin grant, invite code, bought) and
+    // when a granted plan runs out. NULL = no end.
+    planSource: text('plan_source').notNull().default('admin'),
+    planExpiresAt: timestamp('plan_expires_at', { withTimezone: true }),
   },
   (table) => ({
     deletionStatusIdx: index('idx_users_deletion_status')
@@ -124,6 +159,10 @@ export const users = pgTable(
     cameraProfileModeCheck: check(
       'users_camera_profile_mode_check',
       sql`${table.cameraProfileMode} IN ('auto','reolink','hikvision','axis','foscam','custom')`,
+    ),
+    planSourceCheck: check(
+      'users_plan_source_check',
+      sql`${table.planSource} IN ('admin', 'invite', 'subscription')`,
     ),
   }),
 );

@@ -455,6 +455,12 @@ export async function getEventsMissingThumbnail(limit: number): Promise<{ id: st
     .where(
       and(
         isNull(events.thumbnail),
+        // Never-attempted only: once the worker has taken a job it owns the
+        // retries (budget + tombstone + DLQ). A tombstoned event keeps a NULL
+        // thumbnail forever, so without these two filters the minute-cadence
+        // redrive would re-publish it every dedup TTL.
+        eq(events.thumbnailAttempts, 0),
+        eq(events.playbackUnplayable, false),
         sql`EXISTS (SELECT 1 FROM event_view_files elf WHERE elf.event_id = ${events.id})`,
       ),
     )
@@ -1537,6 +1543,87 @@ export async function deleteFileMetadataByOwner(ownerId: number): Promise<number
 export async function deleteEventsByOwner(ownerId: number): Promise<number> {
   const result = await db.delete(events).where(eq(events.ownerId, ownerId));
   return result.rowCount ?? 0;
+}
+
+/** Delete a user's file_metadata rows uploaded before `cutoff`. */
+export async function deleteFileMetadataUploadedBefore(ownerId: number, cutoff: Date, tx?: Tx): Promise<number> {
+  const rows = await (tx ?? db).delete(fileMetadata)
+    .where(and(eq(fileMetadata.ownerId, ownerId), lt(fileMetadata.uploadedAt, cutoff)))
+    .returning({ id: fileMetadata.id });
+  return rows.length;
+}
+
+/**
+ * Before the files are deleted: on events that keep at least one view whose
+ * file was uploaded at or after `cutoff` (an old event merged with a view
+ * uploaded later), drop the views whose files go, and clear the thumbnail —
+ * its object is from before the cutoff and is deleted with the rest. The
+ * thumbnail is regenerated from the surviving view (`thumbnail_attempts = 0`
+ * puts the event back in the redrive's missing-thumbnail sweep) and the
+ * event is hidden until then. A tombstoned event is left as it is. Returns
+ * the number of events changed. Same relation as the other queries here:
+ * s3_key = "<users.uuid>/" + rel path.
+ */
+export async function detachViewsOfFilesUploadedBefore(owner: { id: number; uuid: string }, cutoff: Date, tx?: Tx): Promise<number> {
+  const result = await (tx ?? db).execute(sql`
+    WITH dropped AS (
+      DELETE FROM event_view_files v
+       USING events e, users u, file_metadata f
+       WHERE v.event_id = e.id
+         AND e.owner_id = ${owner.id}
+         AND u.id = e.owner_id AND u.uuid = ${owner.uuid}
+         AND f.owner_id = e.owner_id
+         AND f.uploaded_at < ${cutoff}
+         AND SUBSTRING(f.s3_key FROM LENGTH(u.uuid) + 2) = v.video_rel_path
+         AND EXISTS (
+           SELECT 1 FROM event_view_files v2
+             JOIN file_metadata f2 ON f2.owner_id = e.owner_id
+                                  AND SUBSTRING(f2.s3_key FROM LENGTH(u.uuid) + 2) = v2.video_rel_path
+            WHERE v2.event_id = e.id AND f2.uploaded_at >= ${cutoff})
+      RETURNING v.event_id
+    )
+    UPDATE events
+       SET thumbnail = NULL, thumbnail_attempts = 0, playback_ready = FALSE
+     WHERE owner_id = ${owner.id}
+       AND id IN (SELECT event_id FROM dropped)
+       AND (thumbnail IS NULL OR thumbnail <> ${THUMBNAIL_UNPLAYABLE})
+  `);
+  return result.rowCount ?? 0;
+}
+
+/**
+ * Delete a user's events none of whose views points at a file the user still
+ * has (same relation as getEventsMissingSidecar: s3_key = "<users.uuid>/" +
+ * rel path; the uuid comes from the row, and an `owner.uuid` that is not the
+ * row's matches nothing). An event created after `cutoff` that has no view
+ * yet is kept — it is being processed for a file uploaded after the cutoff.
+ * Views cascade.
+ */
+export async function deleteEventsWithoutSurvivingFiles(owner: { id: number; uuid: string }, cutoff: Date, tx?: Tx): Promise<number> {
+  const result = await (tx ?? db).execute(sql`
+    DELETE FROM events e
+     USING users u
+     WHERE e.owner_id = ${owner.id}
+       AND u.id = e.owner_id AND u.uuid = ${owner.uuid}
+       AND NOT EXISTS (
+         SELECT 1 FROM event_view_files v
+           JOIN file_metadata f ON f.owner_id = e.owner_id
+                               AND SUBSTRING(f.s3_key FROM LENGTH(u.uuid) + 2) = v.video_rel_path
+          WHERE v.event_id = e.id)
+       AND (e.created_at IS NULL OR e.created_at < ${cutoff}
+            OR EXISTS (SELECT 1 FROM event_view_files v2 WHERE v2.event_id = e.id))
+  `);
+  return result.rowCount ?? 0;
+}
+
+/** Set disk_usage_bytes to the size of the files the user still has. Returns the new value. */
+export async function recomputeDiskUsage(ownerId: number, tx?: Tx): Promise<number> {
+  const { rows } = await (tx ?? db).execute<{ bytes: string }>(sql`
+    UPDATE users SET disk_usage_bytes = COALESCE((SELECT SUM(f.file_size_bytes) FROM file_metadata f WHERE f.owner_id = ${ownerId}), 0)
+     WHERE id = ${ownerId}
+     RETURNING disk_usage_bytes::text AS bytes
+  `);
+  return rows[0] ? Number(rows[0].bytes) : 0;
 }
 
 export async function getFileMetadataSize(

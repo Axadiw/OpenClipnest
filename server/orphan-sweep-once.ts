@@ -25,7 +25,7 @@
  * that overruns costs a delayed cleanup; an audit that overruns costs
  * retention.
  */
-import { Sentry } from './sentry.js';
+import { captureException, closeErrorReporting } from './errorReporting.js';
 import { initDb } from './db/index.js';
 import { runStorageReconciliation } from './services/storageReconciler.js';
 import { closeRedis } from './utils/redis.js';
@@ -45,13 +45,13 @@ async function main(): Promise<void> {
 main()
   .then(async () => {
     await closeRedis();
-    await Sentry.close(200);
+    await closeErrorReporting(200);
     process.exit(0);
   })
   .catch(async (err) => {
     console.error('orphan-sweep: FAILED', err instanceof Error ? err.message : String(err));
-    Sentry.captureException(err);
-    await Sentry.close(2000);
+    captureException(err);
+    await closeErrorReporting(2000);
     await closeRedis().catch(() => {});
     process.exit(1);
   });

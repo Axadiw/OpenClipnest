@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { api } from '../api';
+import { api, ApiError } from '../api';
 import { useTranslation } from '../i18n';
 import { getFilename, type CameraEvent, type ViewId } from '../types';
 import { ViewIcon } from './ViewIcon';
@@ -10,6 +10,7 @@ import { RelativeTime } from './RelativeTime';
 import { formatEventDateTime } from '../utils/format';
 import { useVideoStallRetry } from '../hooks/useVideoStallRetry';
 import { usePlaybackBeacon } from '../hooks/usePlaybackBeacon';
+import { useScrubCacheLifetime } from '../hooks/useScrubCacheLifetime';
 import { computeBufferOverlay } from '../lib/bufferOverlayMath';
 import { canStep, stepOnGrid } from '../lib/frameStep';
 
@@ -91,9 +92,19 @@ export function VideoPlayer({ event, view, events, onClose, onNavigate }: Props)
   // enough to accept it. Cleared on first successful apply.
   const pendingSeekRef = useRef(0);
 
+  const [accessLocked, setAccessLocked] = useState(false);
+
   const loadVideo = useCallback(async (eid: string, l: ViewId) => {
     if (objectUrlRef.current) { URL.revokeObjectURL(objectUrlRef.current); objectUrlRef.current = null; }
-    const { videoUrl, totalBytes } = await api.getVideoUrl(eid, l);
+    let src: { videoUrl: string; totalBytes: number | null };
+    try {
+      src = await api.getVideoUrl(eid, l);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 403 && err.body?.code === 'ACCOUNT_LOCKED') { setAccessLocked(true); return; }
+      throw err;
+    }
+    const { videoUrl, totalBytes } = src;
+    setAccessLocked(false);
     setVideoSrc(videoUrl);
     setVideoTotalBytes(totalBytes);
     setFrameGrid([]);
@@ -246,12 +257,16 @@ export function VideoPlayer({ event, view, events, onClose, onNavigate }: Props)
   // once the new src parses metadata.
   const stallRetry = useVideoStallRetry(videoRef, videoSrc || null);
 
+  // Free this recording's bytes in the service worker's memory cache when the player closes
+  // or switches view.
+  useScrubCacheLifetime(videoSrc || null);
+
   // Playback counts for the activity dashboard — see usePlaybackBeacon. Keyed
   // on the event, not the src, so switching view or a stall-retry reload of the
   // same recording stays one playback.
   usePlaybackBeacon(videoRef, videoSrc ? event.id : null, videoSrc);
 
-  const isVideoLoading = seekPending || videoBuffering || stallRetry.retrying || stallRetry.failed;
+  const isVideoLoading = seekPending || videoBuffering || stallRetry.retrying || stallRetry.failed || accessLocked;
 
   // Hide the rapidly-changing % + byte detail for the first 5s of a load —
   // mirrors the iOS PlayerLoadingOverlay (spinner-only, details fade in after
@@ -265,7 +280,9 @@ export function VideoPlayer({ event, view, events, onClose, onNavigate }: Props)
     return () => clearTimeout(id);
   }, [isVideoLoading]);
 
-  const bufferLabel = stallRetry.failed
+  const bufferLabel = accessLocked
+    ? t('account.lockedPlayback')
+    : stallRetry.failed
     ? t('timeline.failedToLoad')
     : stallRetry.retrying
       ? t('timeline.retrying', { count: stallRetry.retryCount, max: 10 })
@@ -366,11 +383,11 @@ export function VideoPlayer({ event, view, events, onClose, onNavigate }: Props)
               <BlurredThumbnailBackdrop eventId={event.id} visible={isVideoLoading} />
               {isVideoLoading && (
                 <div className="video-buffer-overlay" data-testid="player-buffer">
-                  {!stallRetry.failed && <div className="spinner" />}
+                  {!stallRetry.failed && !accessLocked && <div className="spinner" />}
                   <div className="video-buffer-label" data-testid="player-buffer-label">
                     {bufferLabel}
                   </div>
-                  {showBufferDetails && bufferedSec !== null && !stallRetry.failed && !stallRetry.retrying && (() => {
+                  {showBufferDetails && bufferedSec !== null && !stallRetry.failed && !stallRetry.retrying && !accessLocked && (() => {
                     const overlay = computeBufferOverlay({
                       bufferedSec: bufferedSec ?? 0,
                       durationSec: videoDurationSec,
@@ -397,7 +414,7 @@ export function VideoPlayer({ event, view, events, onClose, onNavigate }: Props)
                       </div>
                     );
                   })()}
-                  {stallRetry.failed && (
+                  {stallRetry.failed && !accessLocked && (
                     <div className="video-buffer-actions" data-testid="player-buffer-actions">
                       <button
                         className="btn btn-sm"

@@ -35,6 +35,10 @@ vi.mock('../db/queries/storage.js', () => ({
   updateDiskUsage: vi.fn(() => Promise.resolve()),
 }));
 
+vi.mock('../db/queries/access.js', () => ({
+  isAccessLocked: vi.fn(() => Promise.resolve(false)),
+}));
+
 vi.mock('../db/queries/users.js', () => ({
   getUserByInternalId: vi.fn(),
 }));
@@ -101,6 +105,7 @@ import { getEvents, getEventByIdForOwner } from '../db/queries/events.js';
 import { getUserByInternalId } from '../db/queries/users.js';
 import { getObject, headObject, cachedHeadObject } from '../services/s3.js';
 import { getSidecar } from '../services/sidecarCache.js';
+import { cleanFrameSidecarCache } from '../services/cleanFrameSidecarCache.js';
 import { checkAndResetTransfer, updateTransferUsage } from '../db/queries/storage.js';
 import { generateMediaToken } from '../services/auth.js';
 import { mediaRateLimit } from '../middleware/rateLimit.js';
@@ -183,6 +188,8 @@ function fakeStream(content = 'binary-data'): Readable {
 describe('Events routes — cross-user access prevention', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The clean-frame sidecar cache is process-wide state; a test must not inherit another test's entries.
+    cleanFrameSidecarCache.clear();
 
     // cachedHeadObject (v0.10.272+) is the Redis-cached wrapper that the
     // /video hot-path uses now. For tests it just forwards to the
@@ -497,10 +504,15 @@ describe('Events routes — cross-user access prevention', () => {
         frameGrid: [],
       });
 
-      vi.mocked(getObject)
-        .mockResolvedValueOnce({ body: Readable.from([sidecar]), contentRange: undefined }) // clean_frame fetch
-        .mockRejectedValueOnce(Object.assign(new Error('S3 connection reset'), { name: 'NetworkingError' })) // zone-3 mid-stream throw (post-header)
-        .mockResolvedValue({ body: fakeStream('MUST-NOT-BE-STREAMED'), contentRange: undefined }); // would be the leaked 2nd pipe
+      // Told apart by what is asked for, not by call order: on a sidecar cache miss the route also touches the
+      // original with a 16-byte read (a warm-up), which must not be mistaken for the data read.
+      let dataReads = 0;
+      vi.mocked(getObject).mockImplementation(async (bucket: string, _key: string, _salt: string, byteRange?: string) => {
+        if (bucket === 'sidecars') return { body: Readable.from([sidecar]), contentRange: undefined }; // clean_frame fetch
+        if (byteRange === 'bytes=0-15') return { body: fakeStream('w'.repeat(16)), contentRange: undefined }; // the warm-up
+        if (++dataReads === 1) throw Object.assign(new Error('S3 connection reset'), { name: 'NetworkingError' }); // zone-3 mid-stream throw (post-header)
+        return { body: fakeStream('MUST-NOT-BE-STREAMED'), contentRange: undefined }; // would be the leaked 2nd pipe
+      });
 
       try {
         await request(buildApp(USER_A)).get('/events/evt-001/video/00?fmt=clean');
@@ -509,13 +521,60 @@ describe('Events routes — cross-user access prevention', () => {
       }
       await new Promise((r) => setImmediate(r));
 
-      // FIX 1 invariant: the fall-through MUST NOT run, so getObject is called
-      // exactly twice (clean_frame fetch + the failing zone-3 GET) — never a
-      // third time for an fmp4/pass-through re-stream that would stack a second
-      // pipe (the listener leak) and corrupt the half-sent body.
-      expect(vi.mocked(getObject)).toHaveBeenCalledTimes(2);
+      // FIX 1 invariant: the fall-through MUST NOT run, so there is exactly ONE data read (the
+      // failing zone-3 GET) — never a second one for an fmp4/pass-through re-stream that would
+      // stack a second pipe (the listener leak) and corrupt the half-sent body. (The clean_frame
+      // fetch and the warm-up read are not data reads.)
+      const dataGets = vi.mocked(getObject).mock.calls.filter(([bucket, , , byteRange]) => bucket !== 'sidecars' && byteRange !== 'bytes=0-15');
+      expect(dataGets).toHaveLength(1);
       // FIX 2 corollary: transfer billed AT MOST once (never doubled).
       expect(vi.mocked(updateTransferUsage).mock.calls.length).toBeLessThanOrEqual(1);
+    });
+
+    it('does not fetch the clean-frame sidecar again for the next request of the same clip', async (ctx) => {
+      story(
+        ctx,
+        'Przeglądarka i aplikacje robią HEAD i kilka Range GET-ów na jedno odtworzenie. Sidecar clean-frame ma być pobrany z magazynu RAZ, a kolejne żądania tego klipu mają kosztować już tylko odczyt danych (50-250 ms mniej na żądanie na zdalnym magazynie).',
+      );
+      const { packCleanFrameSidecar } = await import('../services/mp4/cleanFrameSidecar.js');
+      vi.mocked(getEventByIdForOwner).mockResolvedValue(EVENT_OWNED_BY_A);
+      vi.mocked(headObject).mockResolvedValue({ contentLength: 4096, lastModified: new Date() });
+      const prelude = Buffer.from('ftyp+clean-frame-prelude-bytes');
+      const sidecar = packCleanFrameSidecar({
+        prelude,
+        mdatHeader: Buffer.from([0, 0, 0, 8, 0x6d, 0x64, 0x61, 0x74]),
+        byteRanges: [{ srcOffset: 100, length: 100 }],
+        frameGrid: [],
+      });
+      // What a request asks the object store for, told apart by the bucket and the range it names.
+      vi.mocked(getObject).mockImplementation(async (bucket: string, _key: string, _salt: string, byteRange?: string) => {
+        if (bucket === 'sidecars') return { body: Readable.from([sidecar]), contentRange: undefined };
+        if (byteRange === 'bytes=0-15') return { body: fakeStream('w'.repeat(16)), contentRange: undefined };
+        return { body: fakeStream('d'.repeat(100)), contentRange: undefined };
+      });
+      const reads = () => vi.mocked(getObject).mock.calls;
+      const sidecarReads = () => reads().filter(([bucket]) => bucket === 'sidecars').length;
+      const warmUps = () => reads().filter(([bucket, , , byteRange]) => bucket !== 'sidecars' && byteRange === 'bytes=0-15').length;
+      const dataReads = () => reads().filter(([bucket, , , byteRange]) => bucket !== 'sidecars' && byteRange !== 'bytes=0-15').length;
+
+      try {
+        const first = await request(buildApp(USER_A)).get('/events/evt-001/video/00?fmt=clean');
+        const second = await request(buildApp(USER_A)).get('/events/evt-001/video/00?fmt=clean');
+
+        expect(first.status).toBe(200);
+        expect(second.status).toBe(200);
+        // Both responses are the same clean stream: prelude + 8-byte mdat header + the 100-byte run.
+        const served = String(prelude.length + 8 + 100);
+        expect(first.headers['content-length']).toBe(served);
+        expect(second.headers['content-length']).toBe(served);
+        expect(sidecarReads()).toBe(1); // the sidecar: once
+        expect(warmUps()).toBe(1); // the original is warmed once, together with that first sidecar read
+        expect(dataReads()).toBe(2); // the data: each response still reads its own bytes
+        // The second request added exactly one read: its data. No sidecar, no warm-up.
+        expect(reads()).toHaveLength(4);
+      } finally {
+        vi.mocked(getObject).mockReset();
+      }
     });
   });
 

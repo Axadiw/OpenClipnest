@@ -6,7 +6,7 @@ import {
 } from '../middleware/rateLimit.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireOwner } from '../middleware/editionGuards.js';
-import { generateAccessToken, generateRefreshToken } from '../services/auth.js';
+import { issueSessionTokens } from '../services/sessions.js';
 import { getUserByInternalId } from '../db/queries/users.js';
 import {
   generateUserCode,
@@ -123,8 +123,7 @@ router.post('/token', deviceCodePollRateLimit, async (req, res) => {
       isAdmin: user.isAdmin,
       tokenGen: user.tokenGeneration,
     };
-    const token = generateAccessToken(basePayload);
-    const refreshToken = generateRefreshToken(basePayload);
+    const { token, refreshToken } = await issueSessionTokens(basePayload);
     // Single-use: burn the code so a leaked device_code is worthless post-login.
     await markDeviceCodeUsed(row.id);
 

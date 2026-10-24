@@ -40,10 +40,9 @@ import {
 import { patchAudioStts } from '../../services/mp4/audioStts.js';
 import { readBoxHeader } from '../../services/mp4/boxes.js';
 import { CONFIG } from '../../config.js';
-import {
-  unpackCleanFrameSidecar,
-  type CleanFrameSidecarData,
-} from '../../services/mp4/cleanFrameSidecar.js';
+import type { CleanFrameSidecarData } from '../../services/mp4/cleanFrameSidecar.js';
+import { loadCleanFrameSidecar, isS3NotFound } from '../../services/cleanFrameLoad.js';
+import { requireUnlockedAccount } from '../../middleware/accountAccess.js';
 import {
   cleanFrameLayout,
   cleanFrameMaxSrcEnd,
@@ -62,56 +61,6 @@ async function getUserSalt(userId: number): Promise<string | undefined> {
   return user?.encryptionSalt;
 }
 
-/** Discriminates a permanent NoSuchKey/404 from a transient S3 error. */
-function isS3NotFound(err: unknown): boolean {
-  const e = err as { name?: string; Code?: string; $metadata?: { httpStatusCode?: number } };
-  const msg = err instanceof Error ? err.message : String(err);
-  return Boolean(
-    (e.name && /NoSuchKey|NotFound/i.test(e.name)) ||
-    (e.Code && /NoSuchKey|NotFound/i.test(e.Code)) ||
-    e.$metadata?.httpStatusCode === 404 ||
-    /specified key does not exist|NoSuchKey|status code: 404/i.test(msg),
-  );
-}
-
-/**
- * Fetch + unpack the `.clean_frame` sidecar for a file, with a short retry on
- * TRANSIENT S3 errors (the sidecars bucket is hot and sporadically 503s). The
- * blob is small (~KB) and read fully into memory before unpacking, so retrying
- * the whole fetch is safe.
- *
- * Why the retry matters (CLEAN-FRAME-SIZE-MISMATCH-502): the web player always
- * requests `?fmt=clean`. When this fetch intermittently fails, the GET handler
- * used to silently fall through to the non-clean path, which advertises the
- * ORIGINAL size instead of the (smaller) clean servedSize. The total then flips
- * between requests, the browser seeks past the clean EOF, and the tail range
- * 416s/resets → nginx 502 ("can't play the last ~2 s"). Reliable loading keeps
- * a sidecar'd file on ONE consistent size.
- *
- * Throws with `isS3NotFound(err) === true` for a genuine miss (caller may fall
- * through to the non-clean path — a sidecar-less file is consistently served at
- * the original size on every request); throws the last transient error after
- * the retries are exhausted (caller returns a retryable 503, never a
- * different-size body).
- */
-async function loadCleanFrameSidecar(s3Key: string, userSalt: string): Promise<CleanFrameSidecarData> {
-  const cfKey = `${s3Key}.clean_frame`;
-  let lastErr: unknown;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const { body } = await getObject(CONFIG.s3SidecarsBucket, cfKey, userSalt);
-      const chunks: Buffer[] = [];
-      for await (const chunk of body as AsyncIterable<Buffer>) chunks.push(chunk as Buffer);
-      return unpackCleanFrameSidecar(Buffer.concat(chunks));
-    } catch (err) {
-      if (isS3NotFound(err)) throw err; // permanent — don't retry
-      lastErr = err;
-      if (attempt < 2) await new Promise((r) => setTimeout(r, 100 * (attempt + 1)));
-    }
-  }
-  throw lastErr;
-}
-
 /**
  * The authoritative served size of the `?fmt=clean` response for a file, or
  * `null` when no usable clean sidecar exists (genuine miss, OR a STALE sidecar
@@ -120,12 +69,13 @@ async function loadCleanFrameSidecar(s3Key: string, userSalt: string): Promise<C
  * back to the original `fileSize` only when there is no clean body to serve.
  */
 async function cleanFrameServedSize(
+  bucket: string,
   s3Key: string,
   userSalt: string,
   fileSize: number,
 ): Promise<number | null> {
   try {
-    const sidecar = await loadCleanFrameSidecar(s3Key, userSalt);
+    const sidecar = await loadCleanFrameSidecar(bucket, s3Key, userSalt);
     if (cleanFrameMaxSrcEnd(sidecar.byteRanges) > fileSize) return null; // stale
     return cleanFrameLayout(sidecar.prelude.length, sidecar.mdatHeader.length, sidecar.byteRanges).servedSize;
   } catch {
@@ -502,7 +452,7 @@ function writeAsync(stream: Writable, buf: Buffer): Promise<void> {
 // lookup. The numbers don't have to match the GET byte-perfectly (the patched
 // stream is `origSize + mfraLen`, a few KB larger) — clients always re-learn
 // the real length from `Content-Range` on the first Range GET.
-videoRouter.head('/:id/video/:view', mediaRateLimit, async (req: Request<{ id: string; view: string }>, res) => {
+videoRouter.head('/:id/video/:view', requireUnlockedAccount, mediaRateLimit, async (req: Request<{ id: string; view: string }>, res) => {
   if (req.user?.mediaEventId && req.user.mediaEventId !== req.params.id) {
     res.status(403).end();
     return;
@@ -546,7 +496,7 @@ videoRouter.head('/:id/video/:view', mediaRateLimit, async (req: Request<{ id: s
     // stale sidecar), which matches what the GET path then serves.
     let advertisedLen = fileSize;
     if (CONFIG.cleanFrameEnabled && req.query['fmt'] === 'clean') {
-      const served = await cleanFrameServedSize(s3Path.key, userSalt, fileSize);
+      const served = await cleanFrameServedSize(s3Path.bucket, s3Path.key, userSalt, fileSize);
       if (served !== null) advertisedLen = served;
     }
     // Strip helmet's default CSP / CORP from the response — they are intended
@@ -581,7 +531,7 @@ videoRouter.head('/:id/video/:view', mediaRateLimit, async (req: Request<{ id: s
 // their own) plus once-only transfer metering. Without both, this endpoint was
 // an unrate-limited, unbilled ~4 MB S3 read: free egress + socket-pool
 // amplification.
-videoRouter.get('/:id/video/:view/frames', mediaRateLimit, async (req: Request<{ id: string; view: string }>, res) => {
+videoRouter.get('/:id/video/:view/frames', requireUnlockedAccount, mediaRateLimit, async (req: Request<{ id: string; view: string }>, res) => {
   const userId = req.user?.userId;
   if (!userId) { res.status(401).json({ error: 'Unauthorized' }); return; }
 
@@ -642,7 +592,7 @@ videoRouter.get('/:id/video/:view/frames', mediaRateLimit, async (req: Request<{
 // yields the pristine file the camera produced (never the reconstructed
 // playback stream the `/video/:view` endpoint serves). `Content-Disposition:
 // attachment` makes the browser save rather than navigate.
-videoRouter.get('/:id/video/:view/original', mediaRateLimit, videoConcurrencyCap, async (req: Request<{ id: string; view: string }>, res) => {
+videoRouter.get('/:id/video/:view/original', requireUnlockedAccount, mediaRateLimit, videoConcurrencyCap, async (req: Request<{ id: string; view: string }>, res) => {
   if (req.user?.mediaEventId && req.user.mediaEventId !== req.params.id) {
     res.status(403).json({ error: 'Token not valid for this resource' });
     return;
@@ -755,7 +705,7 @@ videoRouter.get('/:id/video/:view/original', mediaRateLimit, videoConcurrencyCap
   }
 });
 
-videoRouter.get('/:id/video/:view', mediaRateLimit, videoConcurrencyCap, async (req: Request<{ id: string; view: string }>, res) => {
+videoRouter.get('/:id/video/:view', requireUnlockedAccount, mediaRateLimit, videoConcurrencyCap, async (req: Request<{ id: string; view: string }>, res) => {
   // Validate media token scope if used
   if (req.user?.mediaEventId && req.user.mediaEventId !== req.params.id) {
     res.status(403).json({ error: 'Token not valid for this resource' });
@@ -921,7 +871,7 @@ videoRouter.get('/:id/video/:view', mediaRateLimit, videoConcurrencyCap, async (
       // "11 close listeners on [ServerResponse]" leak.
       let cfSidecar: CleanFrameSidecarData | null = null;
       try {
-        cfSidecar = await loadCleanFrameSidecar(s3Path.key, userSalt);
+        cfSidecar = await loadCleanFrameSidecar(s3Path.bucket, s3Path.key, userSalt);
       } catch (err) {
         if (!isS3NotFound(err)) {
           // Transient sidecar-bucket error that survived the retries. Do NOT

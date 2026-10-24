@@ -7,3 +7,5 @@ export * from './push.js';
 export * from './identities.js';
 export * from './tv.js';
 export * from './invites.js';
+export * from './payments.js';
+export * from './sessions.js';

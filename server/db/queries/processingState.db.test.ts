@@ -12,19 +12,13 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { Pool } from 'pg';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { dirname } from 'node:path';
-import { migrateToSchema } from '../../testing/migrate-schema.js';
+import { createScratchDb, type ScratchDb } from '../../testing/scratch-db.js';
 import { story } from '../../testing/story.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const TEST_DB_URL = process.env.DATABASE_URL_TEST ?? process.env.DATABASE_URL;
 // Migrations are two levels up from server/db/queries/ → server/db/migrations/
-const MIGRATIONS_DIR = join(__dirname, '..', 'migrations');
 
-const SCRATCH_SCHEMA = `test_pstate_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 // Schema-contract tests: these replicate the drizzle-generated SQL on purpose
 // so that the exact column semantics are pinned here even though the app
@@ -32,16 +26,12 @@ const SCRATCH_SCHEMA = `test_pstate_${Date.now()}_${Math.random().toString(36).s
 // by the CI integration tests (tests/test-server/).
 describe.skipIf(!TEST_DB_URL)('processing_state dual-write SQL contract', () => {
   let pool: Pool;
+  let scratch: ScratchDb | undefined;
   let fileMetadataId: number;
 
   beforeAll(async () => {
-    pool = new Pool({
-      connectionString: TEST_DB_URL,
-      max: 2,
-      options: `-c search_path="${SCRATCH_SCHEMA}",public`,
-    });
-    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${SCRATCH_SCHEMA}"`);
-    await migrateToSchema(pool, SCRATCH_SCHEMA, MIGRATIONS_DIR);
+    scratch = await createScratchDb({ max: 2 });
+    pool = scratch.pool;
 
     // Seed a plan required by users FK
     await pool.query(
@@ -51,11 +41,7 @@ describe.skipIf(!TEST_DB_URL)('processing_state dual-write SQL contract', () => 
   }, 90_000);
 
   afterAll(async () => {
-    if (!pool) return;
-    await pool.end();
-    const cleanup = new Pool({ connectionString: TEST_DB_URL, max: 1 });
-    await cleanup.query(`DROP SCHEMA IF EXISTS "${SCRATCH_SCHEMA}" CASCADE`);
-    await cleanup.end();
+    await scratch?.drop();
   }, 90_000);
 
   beforeEach(async () => {
@@ -539,7 +525,7 @@ describe.skipIf(!TEST_DB_URL)('processing_state dual-write SQL contract', () => 
     const { rows } = await pool.query<{ indexname: string }>(
       `SELECT indexname FROM pg_indexes
         WHERE schemaname = $1 AND tablename = 'file_metadata'`,
-      [SCRATCH_SCHEMA],
+      ['public'],
     );
     const names = rows.map(r => r.indexname);
     expect(names).toContain('idx_file_metadata_owner_state_pending');

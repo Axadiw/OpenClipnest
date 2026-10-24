@@ -154,7 +154,10 @@ export async function recordFailedLogin(internalId: number, channel: LoginChanne
       type: 'lockout',
       channel,
       reason: null,
-      expiresAt: new Date(Date.now() + lockoutSeconds(channel, tier) * 1000),
+      // Counted from the database clock, like created_at (NOW() = the start
+      // of this transaction): a JS Date.now() taken after waiting for the row
+      // lock above would make the lockout longer than its tier.
+      expiresAt: sql`NOW() + make_interval(secs => ${lockoutSeconds(channel, tier)})`,
     });
   });
 }

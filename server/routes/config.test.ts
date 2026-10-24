@@ -12,7 +12,7 @@ const { createConfigRouter } = await import('./config.js');
 describe('GET /api/v0/config', () => {
   it('reports the edition, its features and the FTPS endpoint without auth', async (ctx) => {
     story(ctx, 'Klient (web albo natywny) pyta serwer, co ten potrafi, ZANIM pokaże ekran logowania — dzięki temu ten sam klient obsługuje Clipnest Cloud i instancję self-hosted, chowając przyciski passkey/Google/Apple/rejestracji, których serwer nie ma, i pokazując właściwy host FTPS.');
-    const features = { registration: false, passkeys: false, oauthGoogle: false, oauthApple: false, push: false, mcp: true };
+    const features = { registration: false, passkeys: false, oauthGoogle: false, oauthApple: false, push: false, mcp: true, paidPlans: false };
     const app = express().use('/api/v0/config', createConfigRouter({ name: 'selfhost', features }));
 
     const res = await request(app).get('/api/v0/config');

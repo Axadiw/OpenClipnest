@@ -1,7 +1,7 @@
 // server/db/queries/oauth.ts
 import { eq, and, sql, isNull, gt } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
-import { db, withTx } from '../index.js';
+import { db, withTx, type Tx } from '../index.js';
 import {
   oauthClients,
   oauthAuthorizationTxns,
@@ -569,6 +569,19 @@ export async function sweepExpiredOauthRows(): Promise<{
     refresh: refreshResult.rowCount ?? 0,
     audit: auditResult.rowCount ?? 0,
   };
+}
+
+/**
+ * Delete a user's authorization codes that were never exchanged, so none can
+ * still be turned into tokens. Used when an account's sign-in methods are
+ * reset. Pass `tx` to make it part of a caller's transaction.
+ */
+export async function deleteUnusedAuthCodesForUser(userId: number, tx?: Tx): Promise<number> {
+  const rows = await (tx ?? db)
+    .delete(oauthAuthorizationCodes)
+    .where(and(eq(oauthAuthorizationCodes.userId, userId), isNull(oauthAuthorizationCodes.consumedAt)))
+    .returning({ userId: oauthAuthorizationCodes.userId });
+  return rows.length;
 }
 
 // ==== Bulk revoke (called by oauthRevokeAll script) ====

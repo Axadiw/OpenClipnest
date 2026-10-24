@@ -50,6 +50,18 @@ export default tseslint.config(
     },
   },
   {
+    // Error monitoring is an edition concern. The shared tree reports through
+    // server/errorReporting.ts and frontend/src/lib/errorReporting.ts; only an
+    // edition's own directory may talk to a monitoring SDK.
+    files: ['server/**/*.ts', 'clipnest-mcp/**/*.ts', 'frontend/src/**/*.{ts,tsx}'],
+    ignores: ['server/cloud/**', 'frontend/src/cloud/**'],
+    rules: {
+      'no-restricted-imports': ['error', {
+        patterns: [{ group: ['@sentry/*'], message: 'Report through errorReporting (the edition installs the reporter).' }],
+      }],
+    },
+  },
+  {
     // Service worker scripts under public/ run in a ServiceWorker global
     // scope, not the regular browser window — they need both the SW
     // globals (self, caches) and the shared fetch/Response/TransformStream

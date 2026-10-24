@@ -114,9 +114,6 @@ export const CONFIG = {
   // sender is a no-op and Android devices are skipped (like APNs unconfigured).
   fcmServiceAccountJson: process.env.CLIPNEST_FCM_SERVICE_ACCOUNT_JSON || '',
 
-  // Sentry error monitoring DSN. Optional — when unset, Sentry is a no-op.
-  sentryDsn: process.env.SENTRY_DSN || '',
-
   // Storage reconciler: gate for the Step-2b auto-purge of truly-unowned
   // orphan S3 objects older than ORPHAN_AUTO_PURGE_DAYS. DEFAULT = ENABLED
   // when unset — production already auto-purges and we must preserve that

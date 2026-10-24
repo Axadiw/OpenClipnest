@@ -19,7 +19,10 @@ vi.mock('../api', () => ({
 
 vi.mock('../i18n', () => ({
   registerTranslations: vi.fn(),
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({
+    t: (key: string, params?: Record<string, unknown>) => (params ? [key, ...Object.values(params)].join('|') : key),
+    language: 'pl',
+  }),
 }));
 
 describe('NotificationsBell', () => {
@@ -69,6 +72,51 @@ describe('NotificationsBell', () => {
     fireEvent.click(btn);
     await waitFor(() => expect(screen.getByText('Bad upload')).toBeInTheDocument());
     expect(apiMocks.listNotifications).toHaveBeenCalledWith({ limit: 50 });
+  });
+
+  it('renders a cancelled plan change in the interface language from its plan name', async (ctx) => {
+    story(ctx, 'Powiadomienie o odwołanym przejściu na mniejszy plan pokazuje przetłumaczony tekst z nazwą planu, a nie zapisany angielski komunikat.');
+    apiMocks.listNotifications.mockResolvedValue({
+      notifications: [
+        {
+          id: 'n1', userId: 1, kind: 'plan_change_cancelled',
+          message: 'Your switch to Basic was cancelled because your recordings no longer fit in it.',
+          details: { plan: 'Basic' }, readAt: null, createdAt: '2026-10-20T05:30:00Z',
+        },
+      ],
+    });
+    renderWithRouter(<NotificationsBell />);
+    fireEvent.click(screen.getByRole('button', { name: 'notifications.title' }));
+    expect(await screen.findByText('notifications.planChangeCancelled|Basic')).toBeInTheDocument();
+    expect(screen.queryByText(/Your switch to Basic/)).toBeNull();
+  });
+
+  // The interface language (pl here), not the browser's locale; the UTC day, whatever the time zone.
+  const deletionDate = '28 października 2026';
+
+  it.for([
+    ['the first notice', 'content_deletion_scheduled', { at: '2026-10-28T00:00:00.000Z', final: false }, `notifications.contentDeletionScheduled|${deletionDate}`],
+    ['the final notice', 'content_deletion_scheduled', { at: '2026-10-28T00:00:00.000Z', final: true }, `notifications.contentDeletionTomorrow|${deletionDate}`],
+    ['the completion notice', 'content_deleted', {}, 'notifications.contentDeleted'],
+  ] as const)('renders %s from its template, not the stored English message', async ([, kind, details, expected], ctx) => {
+    story(ctx, 'Powiadomienia o usunięciu nagrań dzwonek pokazuje z szablonu w języku interfejsu, z datą usunięcia (dzień UTC); ostatnie ostrzeżenie ma osobny tekst „jutro”, a zapisany angielski komunikat nie jest wyświetlany.');
+    apiMocks.listNotifications.mockResolvedValue({
+      notifications: [{ id: 'n1', userId: 1, kind, message: 'STORED ENGLISH MESSAGE', details, readAt: null, createdAt: '2026-10-21T06:10:00Z' }],
+    });
+    renderWithRouter(<NotificationsBell />);
+    fireEvent.click(screen.getByRole('button', { name: 'notifications.title' }));
+    expect(await screen.findByText(expected)).toBeInTheDocument();
+    expect(screen.queryByText('STORED ENGLISH MESSAGE')).toBeNull();
+  });
+
+  it.for([['without a date', {}], ['with a date that does not parse', { at: 'not-a-date' }]] as const)('a deletion notice %s falls back to the stored message', async ([, details], ctx) => {
+    story(ctx, 'Powiadomienie o usunięciu bez daty w szczegółach (np. od starszego serwera) albo z datą, której nie da się odczytać, pokazuje zapisany komunikat zamiast pustego szablonu albo „Invalid Date”.');
+    apiMocks.listNotifications.mockResolvedValue({
+      notifications: [{ id: 'n1', userId: 1, kind: 'content_deletion_scheduled', message: 'STORED ENGLISH MESSAGE', details, readAt: null, createdAt: '2026-10-21T06:10:00Z' }],
+    });
+    renderWithRouter(<NotificationsBell />);
+    fireEvent.click(screen.getByRole('button', { name: 'notifications.title' }));
+    expect(await screen.findByText('STORED ENGLISH MESSAGE')).toBeInTheDocument();
   });
 
   it('marks notification as read when clicked', async (ctx) => {

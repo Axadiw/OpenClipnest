@@ -36,3 +36,18 @@ describe('LoginPage — rate-limit countdown on password submit', () => {
     expect(screen.getByText(/0:39/)).toBeInTheDocument();
   });
 });
+
+describe('LoginPage — after the e-mail confirmation link', () => {
+  it('says the account can sign in when the link marks it ready', (ctx) => {
+    story(ctx, 'Konto z opłaconym planem jest aktywne od rejestracji — po potwierdzeniu adresu (?verified=1&ready=1) strona logowania mówi „możesz się zalogować”, a nie „czekaj na admina”.');
+    renderWithRouter(<LoginPage />, { route: '/login?verified=1&ready=1' });
+    expect(screen.getByText('login.verifiedReady')).toBeInTheDocument();
+    expect(screen.queryByText('login.verifiedSuccess')).toBeNull();
+  });
+
+  it('keeps the awaiting-activation copy for other accounts', (ctx) => {
+    story(ctx, 'Bez ready=1 (zwykła rejestracja czekająca na admina) komunikat zostaje bez zmian.');
+    renderWithRouter(<LoginPage />, { route: '/login?verified=1' });
+    expect(screen.getByText('login.verifiedSuccess')).toBeInTheDocument();
+  });
+});

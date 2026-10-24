@@ -1,5 +1,5 @@
-import { and, eq, lt, sql } from 'drizzle-orm';
-import { db } from '../index.js';
+import { and, eq, inArray, lt, sql } from 'drizzle-orm';
+import { db, type Tx } from '../index.js';
 import { tvDeviceCodes, type TvDeviceCode } from '../schema/tv.js';
 
 export async function createDeviceCode(input: {
@@ -61,6 +61,21 @@ export async function approveDeviceCode(userCode: string, userId: number): Promi
     )
     .returning();
   return row;
+}
+
+/**
+ * Kill every code approved for (or bound to) `userId` that has not been
+ * exchanged yet: /token treats 'denied' as dead, so no TV can still pick up a
+ * session from it. Used when an account's sign-in methods are reset. Pass `tx`
+ * to make it part of a caller's transaction. Returns the count.
+ */
+export async function denyOpenDeviceCodesForUser(userId: number, tx?: Tx): Promise<number> {
+  const rows = await (tx ?? db)
+    .update(tvDeviceCodes)
+    .set({ status: 'denied' })
+    .where(and(eq(tvDeviceCodes.userId, userId), inArray(tvDeviceCodes.status, ['pending', 'approved'])))
+    .returning({ id: tvDeviceCodes.id });
+  return rows.length;
 }
 
 /** Burn a code after it has been exchanged for tokens (single-use). */

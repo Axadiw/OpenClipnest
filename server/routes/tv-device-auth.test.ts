@@ -24,6 +24,10 @@ const {
   mockGenerateRefreshToken: vi.fn(),
 }));
 
+vi.mock('../db/queries/sessions.js', () => ({
+  createSession: vi.fn(async () => 'sid-test'),
+}));
+
 vi.mock('../db/queries/tvDeviceCodes.js', () => ({
   createDeviceCode: (...a: unknown[]) => mockCreateDeviceCode(...a),
   approveDeviceCode: (...a: unknown[]) => mockApproveDeviceCode(...a),
