@@ -66,6 +66,20 @@ jobs:
       - name: Test FTP server
         run: cd ftps-server && cargo test
 
+  # Known vulnerabilities in the FTP server's dependencies (RustSec advisory
+  # database) fail the build; "unsound" and "unmaintained" warnings are
+  # reported without failing it. Also runs every night, so an advisory
+  # published after a change was merged still shows up.
+  ftp-server-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: Audit FTP server dependencies
+        run: cd ftps-server && cargo audit
+
   # Installs the whole stack from scratch, exactly as the README describes,
   # and checks it end to end. Also runs every night.
   smoke:
