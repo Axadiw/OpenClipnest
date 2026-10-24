@@ -420,6 +420,35 @@ export async function abortMultipartUpload(
   await s3.send(new AbortMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: uploadId }));
 }
 
+/** A prefix that is not exactly one account's top-level directory. */
+export class UnsafePrefixError extends Error {
+  constructor(prefix: string) {
+    super(`refusing to delete under prefix ${JSON.stringify(prefix)}`);
+    this.name = 'UnsafePrefixError';
+  }
+}
+
+/** Deleting an account's content older than a moment, resumably. */
+export interface PrefixDeleteOptions {
+  /**
+   * Only objects last modified before this are deleted. Objects without a
+   * LastModified are left, counted and logged, and make the call report
+   * complete: false — the prefix is not known to be clean.
+   */
+  modifiedBefore: Date;
+  /** Asked before each listing page; true ends the call with complete: false. */
+  shouldStop?: () => boolean;
+}
+
+// One path segment and a slash: "<uuid>/". Anything else (empty, nested, dot
+// segments) could reach beyond one account and is refused before any request.
+const ACCOUNT_PREFIX_RE = /^(?!\.{1,2}\/)[^/]+\/$/;
+
+/** True when `prefix` is exactly one account's top-level directory ("<uuid>/"). */
+export function isAccountPrefix(prefix: string): boolean {
+  return ACCOUNT_PREFIX_RE.test(prefix);
+}
+
 /**
  * Delete every object under a prefix, batching up to 1000 keys per request
  * (S3 DeleteObjects hard limit). Returns the number of objects removed.
@@ -428,16 +457,29 @@ export async function abortMultipartUpload(
  * thumbnails under `{userUuid}/__generated__/`. The caller invokes this once
  * per bucket per user; we do not assume the prefix only contains one user's
  * data (callers must pass a user-scoped prefix).
+ *
+ * With `opts` (an account's content after its paid access ended): the prefix
+ * must be exactly one account's directory, only objects modified before
+ * `opts.modifiedBefore` go, `opts.shouldStop` can end the call between pages,
+ * and the result says whether the prefix is done. Per-key errors throw either
+ * way, so a caller never treats a partly deleted prefix as done.
  */
+export async function deleteObjectsByPrefix(bucket: string, prefix: string): Promise<number>;
+export async function deleteObjectsByPrefix(bucket: string, prefix: string, opts: PrefixDeleteOptions): Promise<{ deleted: number; complete: boolean }>;
 export async function deleteObjectsByPrefix(
   bucket: string,
   prefix: string,
-): Promise<number> {
+  opts?: PrefixDeleteOptions,
+): Promise<number | { deleted: number; complete: boolean }> {
+  if (opts && !ACCOUNT_PREFIX_RE.test(prefix)) throw new UnsafePrefixError(prefix);
   const s3 = getS3Client();
   let deleted = 0;
   let continuationToken: string | undefined;
+  const cutoff = opts?.modifiedBefore.getTime();
+  let undated = 0;
 
   do {
+    if (opts?.shouldStop?.()) return { deleted, complete: false };
     const page = await s3.send(new ListObjectsV2Command({
       Bucket: bucket,
       Prefix: prefix,
@@ -445,9 +487,15 @@ export async function deleteObjectsByPrefix(
       MaxKeys: 1000,
     }));
 
-    const keys = (page.Contents ?? [])
-      .map(o => o.Key)
-      .filter((k): k is string => typeof k === 'string');
+    const keys: string[] = [];
+    for (const o of page.Contents ?? []) {
+      if (typeof o.Key !== 'string') continue;
+      if (cutoff !== undefined) {
+        if (!(o.LastModified instanceof Date)) { undated++; continue; }
+        if (o.LastModified.getTime() >= cutoff) continue;
+      }
+      keys.push(o.Key);
+    }
 
     if (keys.length > 0) {
       // S3 DeleteObjects returns 200 even when individual keys fail (access
@@ -491,7 +539,14 @@ export async function deleteObjectsByPrefix(
     continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
   } while (continuationToken);
 
-  return deleted;
+  if (!opts) return deleted;
+  if (undated > 0) {
+    console.warn(
+      `deleteObjectsByPrefix: ${undated} object(s) without LastModified left in ` +
+      `bucket=${bucket} prefix=${prefix} — reporting the prefix as not done`,
+    );
+  }
+  return { deleted, complete: undated === 0 };
 }
 
 /**

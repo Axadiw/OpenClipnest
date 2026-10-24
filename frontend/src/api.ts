@@ -4,6 +4,7 @@
 export const FRONTEND_VERSION: string = __APP_VERSION__;
 
 import type { IconKind } from './types';
+import { wipeScrubCache } from './lib/scrubCache/client';
 
 export type CameraProfileMode = 'auto' | 'reolink' | 'hikvision' | 'axis' | 'foscam' | 'custom';
 
@@ -87,6 +88,8 @@ export function clearToken(): void {
   sessionStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(REFRESH_TOKEN_KEY);
   sessionStorage.removeItem(REFRESH_TOKEN_KEY);
+  // Signing out frees every video byte the service worker holds in memory.
+  void wipeScrubCache();
 }
 
 /**
@@ -253,15 +256,42 @@ export function reportPlayback(kind: 'started' | 'completed'): void {
 }
 
 /**
- * Best-effort server-side session revocation. POSTs /auth/logout so the server
- * bumps token_generation (sign-out-everywhere). Errors are swallowed on purpose
- * — a dead network must never block the local sign-out that clears the token.
+ * Best-effort server-side sign-out. `device` ends only this browser's session
+ * (the other devices stay signed in); `all` ends every session of the account.
+ *
+ * The tokens are read up front, so the caller may clear them right after
+ * calling this. It talks to the server directly rather than through
+ * `request()`: an expired access token must not trigger request()'s
+ * reload-on-401, and with the local tokens already cleared request() could not
+ * refresh it. Here an expired access token is refreshed once with the captured
+ * refresh token, and the sign-out sent with the new one. Never throws — a dead
+ * network must never block the local sign-out. Resolves true when the server
+ * confirmed it.
  */
-export async function logout(): Promise<void> {
+export async function logout(scope: 'device' | 'all' = 'device'): Promise<boolean> {
+  const access = getToken();
+  const refresh = getRefreshToken();
+  const send = (token: string) => fetch('/api/v0/auth/logout', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ scope }),
+  });
   try {
-    await request('/api/v0/auth/logout', { method: 'POST' });
+    let res = access ? await send(access) : null;
+    if ((!res || res.status === 401) && refresh) {
+      const refreshed = await fetch('/api/v0/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken: refresh }),
+      });
+      if (refreshed.ok) {
+        const { token } = await refreshed.json() as { token: string };
+        res = await send(token);
+      }
+    }
+    return !!res?.ok;
   } catch {
-    // ignore — local clearToken() is the contract that matters
+    return false;
   }
 }
 
@@ -278,7 +308,7 @@ export interface OAuthResult {
 export interface ServerConfig {
   edition: 'selfhost' | 'cloud';
   version: string;
-  features: { registration: boolean; passkeys: boolean; oauthGoogle: boolean; oauthApple: boolean; push: boolean; mcp: boolean };
+  features: { registration: boolean; passkeys: boolean; oauthGoogle: boolean; oauthApple: boolean; push: boolean; mcp: boolean; paidPlans?: boolean };
   ftps: { host: string; port: number };
   push: { mode: 'relay' | 'direct'; relayUrl?: string } | null;
 }
@@ -430,6 +460,8 @@ export const api = {
   getUsage: () => request<{
     disk: { usageBytes: number; limitBytes: number; percent: number };
     transfer: { usageBytes: number; limitBytes: number; percent: number; resetAt: string | null };
+    /** Absent on older servers. */
+    accessLocked?: boolean;
   }>('/api/v0/usage'),
   // Per-camera disk-usage breakdown for the Storage tab visualization.
   // Sum of `bytes` may be slightly less than `getUsage().disk.usageBytes`

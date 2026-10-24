@@ -3,6 +3,7 @@ import { useTranslation, LANGUAGES, type Language } from '../../i18n';
 import { useTheme, type ThemeMode } from '../../hooks/useTheme';
 import { usePwaInstall } from '../../hooks/usePwaInstall';
 import { api } from '../../api';
+import { useAuth } from '../../context/AuthContext';
 import { DEFAULT_TIMEZONE, selectableTimezones } from '../../utils/timezones';
 
 const ALL_TIMEZONES: string[] = selectableTimezones();
@@ -39,12 +40,49 @@ function TimezoneRow() {
   );
 }
 
+/**
+ * "Sign out everywhere". The header's sign-out ends only this browser's
+ * session; this ends every session of the account at once (and MCP grants).
+ * It is the only such lever for an account without a password to change.
+ */
+function SessionsSection() {
+  const { t } = useTranslation();
+  const { logoutEverywhere } = useAuth();
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  async function onSignOutEverywhere() {
+    if (!window.confirm(t('settings.sessions.confirm'))) return;
+    setBusy(true);
+    setFailed(false);
+    // On success the auth state clears and the route guard leaves this page.
+    if (!(await logoutEverywhere())) {
+      setFailed(true);
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="settings-section" data-testid="sessions-section">
+      <h3 style={{ margin: '0 0 4px', fontSize: '1rem' }}>{t('settings.sessions.title')}</h3>
+      <p className="settings-hint">{t('settings.sessions.body')}</p>
+      {failed && <div className="error" style={{ margin: '8px 0' }}>{t('settings.sessions.failed')}</div>}
+      <div>
+        <button className="btn" onClick={onSignOutEverywhere} disabled={busy} data-testid="sign-out-everywhere">
+          {t('settings.sessions.signOutEverywhere')}
+        </button>
+      </div>
+    </section>
+  );
+}
+
 export function GeneralTab() {
   const { t, language, setLanguage } = useTranslation();
   const theme = useTheme();
   const { showIosHint } = usePwaInstall();
 
   return (
+    <>
     <section className="settings-section">
       <div className="settings-row" style={{ gap: 12, cursor: 'default' }}>
         <span className="settings-row-label" style={{ minWidth: 96 }}>{t('menu.theme')}</span>
@@ -77,5 +115,7 @@ export function GeneralTab() {
         </>
       )}
     </section>
+    <SessionsSection />
+    </>
   );
 }

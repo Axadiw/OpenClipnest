@@ -14,6 +14,7 @@ const MIGRATIONS_DIR = join(__mcp_dirname, '..', '..', 'server', 'db', 'migratio
 import { createClient, insertAccessToken } from '../db/queries.js';
 import { hashToken, mintOpaqueToken } from '../oauth/accessToken.js';
 import { bearerAuthMcp } from './bearerAuth.js';
+import { story } from '../../server/testing/story.js';
 
 const TEST_URL = process.env.MIGRATE_TEST_DATABASE_URL ?? process.env.DATABASE_URL;
 const describeIfDb = TEST_URL ? describe : describe.skip;
@@ -155,5 +156,23 @@ describeIfDb('bearerAuthMcp middleware', () => {
     const res = await request(app).post('/mcp').set('Authorization', `Bearer ${tok}`).send({});
     expect(res.status).toBe(401);
     expect(res.headers['www-authenticate']).toMatch(/error="invalid_token"/);
+  });
+
+  it('rejects a valid token of a locked account with 403 account_locked', async (ctx) => {
+    story(ctx, 'Zablokowane konto nie korzysta z Claude/MCP: ważny token dostaje 403, bez nagłówka, który kazałby klientowi logować się od nowa.');
+    const tok = mintOpaqueToken('mcp_at_');
+    await insertAccessToken({
+      tokenHash: hashToken(tok), clientId, userId, scope: 'videos:read',
+      familyId: randomUUID(), expiresAt: new Date(Date.now() + 900_000),
+    });
+    await pool.query('UPDATE users SET access_locked_at = NOW() WHERE id = $1', [userId]);
+    try {
+      const res = await request(app).post('/mcp').set('Authorization', `Bearer ${tok}`).send({});
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('account_locked');
+      expect(res.headers['www-authenticate']).toBeUndefined();
+    } finally {
+      await pool.query('UPDATE users SET access_locked_at = NULL WHERE id = $1', [userId]);
+    }
   });
 });

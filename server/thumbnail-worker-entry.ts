@@ -5,7 +5,6 @@
 // skips XACK so XCLAIM reclaims, and the entry lands in the DLQ after
 // `maxDeliveries`.
 
-import './sentry.js';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';

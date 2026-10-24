@@ -27,14 +27,37 @@ export function pointerFraction(clientX: number, rect: { left: number; width: nu
   return clamp01((clientX - rect.left) / rect.width);
 }
 
+/** A span of the timeline as fractions (0..1) of the duration. */
+export interface Segment { start: number; end: number }
+
 /**
- * Fraction of `duration` covered by the furthest buffered range end — used
- * to paint the "buffered" portion of the seek bar. Returns 0 when there are
- * no ranges or the duration isn't a usable positive number.
+ * Sort segments and union the overlapping or touching ones; empty segments
+ * are dropped.
  */
-export function bufferedEndFraction(buffered: TimeRanges | null | undefined, duration: number): number {
-  if (!buffered || buffered.length === 0) return 0;
-  if (!Number.isFinite(duration) || duration <= 0) return 0;
-  const end = buffered.end(buffered.length - 1);
-  return clamp01(end / duration);
+export function mergeSegments(segs: Segment[]): Segment[] {
+  const sorted = segs.filter((s) => s.end > s.start).sort((a, b) => a.start - b.start);
+  const out: Segment[] = [];
+  for (const s of sorted) {
+    const last = out[out.length - 1];
+    if (last && s.start <= last.end) last.end = Math.max(last.end, s.end);
+    else out.push({ start: s.start, end: s.end });
+  }
+  return out;
+}
+
+/**
+ * One segment per buffered range, as fractions of `duration`, clamped to
+ * [0,1] — paints the grey "buffered" parts of the seek bar, gaps included.
+ * Returns [] when there are no ranges or the duration isn't usable.
+ */
+export function bufferedSegments(buffered: TimeRanges | null | undefined, duration: number): Segment[] {
+  if (!buffered || buffered.length === 0) return [];
+  if (!Number.isFinite(duration) || duration <= 0) return [];
+  const segs: Segment[] = [];
+  for (let i = 0; i < buffered.length; i++) {
+    const start = clamp01(buffered.start(i) / duration);
+    const end = clamp01(buffered.end(i) / duration);
+    if (end > start) segs.push({ start, end });
+  }
+  return segs;
 }

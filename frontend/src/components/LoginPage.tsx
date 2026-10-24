@@ -52,12 +52,14 @@ export function LoginPage() {
   // Pick up ?verified=1|0 from the GET /verify-email redirect.
   useEffect(() => {
     const verified = searchParams.get('verified');
-    if (verified === '1') setInfo(t('login.verifiedSuccess'));
+    // ready=1: the account is already active, so there is no approval to wait for.
+    if (verified === '1') setInfo(t(searchParams.get('ready') === '1' ? 'login.verifiedReady' : 'login.verifiedSuccess'));
     else if (verified === '0') setError(t('login.verifiedFailure'));
     if (verified !== null) {
       setSearchParams(prev => {
         const next = new URLSearchParams(prev);
         next.delete('verified');
+        next.delete('ready');
         return next;
       }, { replace: true });
     }

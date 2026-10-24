@@ -3,6 +3,7 @@ import { Outlet, useSearchParams, useLocation } from 'react-router-dom';
 import { api, ApiError } from '../api';
 import { useTranslation } from '../i18n';
 import { Header } from './Header';
+import { AccountLockedBanner } from './AccountLockedBanner';
 import { BulkDeleteDialog } from './BulkDeleteDialog';
 import { VideoPlayer } from './VideoPlayer';
 import { Toast, type ToastTone } from './Toast';
@@ -61,6 +62,13 @@ export function AuthedShell() {
   const bulkDeleteOnDone = useCallback(() => bulkDeleteOnDoneRef.current(), []);
   const setBulkDeleteOnDone = useCallback((fn: () => () => void) => { bulkDeleteOnDoneRef.current = fn(); }, []);
   const [toast, setToast] = useState<{ msg: string; tone: ToastTone } | null>(null);
+
+  // Locked accounts keep browsing but lose playback/downloads/uploads. The
+  // operator (admin) account gets 403 from /usage; the banner stays hidden.
+  const [accessLocked, setAccessLocked] = useState(false);
+  useEffect(() => {
+    api.getUsage().then((u) => setAccessLocked(!!u.accessLocked)).catch(() => {});
+  }, []);
 
   // Backend version for the admin menu.
   useEffect(() => {
@@ -162,6 +170,7 @@ export function AuthedShell() {
     <ShellContext.Provider value={shellValue}>
       <div className={`app${isTimeline ? ' app-timeline' : ''}`}>
         <Header backendVersion={backendVersion} />
+        <AccountLockedBanner locked={accessLocked} action={edition.LockedBannerAction ? <edition.LockedBannerAction /> : undefined} />
         <Outlet />
         {playerEvent && (
           <VideoPlayer

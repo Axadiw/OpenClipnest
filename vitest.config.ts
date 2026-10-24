@@ -9,13 +9,15 @@ export default defineConfig({
     // sets DATABASE_URL directly, which this setup respects without
     // overwriting.
     setupFiles: ['./server/testing/load-env-for-tests.ts'],
-    // Hook timeout bumped from the 10s default to 60s. Several test files
-    // (db.migrate, db.schema-roundtrip, db.getEvents-sql, routes/mcpClients,
-    // routes/oauthConsent, scripts/oauthSweep) run a scratch-schema migrate
-    // in beforeAll — drizzle's migrator applies the baseline SQL with a
-    // schema rewrite for each statement, which takes 3-10s on CI's Postgres
-    // 14 (vs sub-second locally on Postgres 16) and 10s leaves no headroom
-    // when several files initialise in parallel.
+    // Migrates one template database per run; DB test files copy it through
+    // createScratchDb (server/testing/scratch-db.ts) instead of each
+    // replaying every migration in beforeAll.
+    globalSetup: ['./server/testing/db-template.global-setup.ts'],
+    // Hook timeout bumped from the 10s default to 60s. The migration suites
+    // (db.migrate*, db.schema-roundtrip) still replay every migration into a
+    // scratch schema in beforeAll — drizzle's baseline SQL with a schema
+    // rewrite per statement, 3-10s on CI's Postgres 14 (sub-second locally on
+    // 16) — and 10s leaves no headroom when several files start at once.
     hookTimeout: 60_000,
     // Dual reporter: default console output PLUS a custom JSON dump with
     // per-test story annotations (see server/testing/json-story-reporter.ts).

@@ -1,31 +1,24 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import pg, { Pool } from 'pg';
+import pg from 'pg';
 import { randomUUID } from 'crypto';
 import { __setPoolForTest } from '../db/index.js';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { dirname } from 'node:path';
 import { runOauthSweep } from './oauthSweep.js';
-import { migrateToSchema } from '../testing/migrate-schema.js';
+import { createScratchDb, type ScratchDb } from '../testing/scratch-db.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const MIGRATIONS_DIR = join(__dirname, '..', 'db', 'migrations');
 
 const TEST_URL = process.env.MIGRATE_TEST_DATABASE_URL ?? process.env.DATABASE_URL;
 const describeIfDb = TEST_URL ? describe : describe.skip;
 
-const SCRATCH_SCHEMA = `test_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 describeIfDb('runOauthSweep', () => {
   let pool: pg.Pool;
+  let scratch: ScratchDb | undefined;
   let userId: number;
   let clientId: string;
 
   beforeAll(async () => {
-    // options sets search_path at connection startup — no connect-event handler needed.
-    pool = new Pool({ connectionString: TEST_URL, max: 5, options: `-c search_path="${SCRATCH_SCHEMA}",public` });
-    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${SCRATCH_SCHEMA}"`);
-    await migrateToSchema(pool, SCRATCH_SCHEMA, MIGRATIONS_DIR);
+    scratch = await createScratchDb({ max: 5 });
+    pool = scratch.pool;
     __setPoolForTest(pool);
     await pool.query(
       `INSERT INTO plans (id, name, disk_space_bytes, monthly_transfer_bytes) VALUES (1, 'free', 1000000, 1000000) ON CONFLICT DO NOTHING`,
@@ -44,17 +37,10 @@ describeIfDb('runOauthSweep', () => {
     );
   }, 60_000);
   afterAll(async () => {
-    if (pool) {
-      await pool.end();
-    }
-    // Cleanup via a separate one-shot connection (pool's connect handler
-    // would still try to SET search_path to a dropped schema otherwise).
-    const cleanup = new Pool({ connectionString: TEST_URL, max: 1 });
-    await cleanup.query(`DROP SCHEMA IF EXISTS "${SCRATCH_SCHEMA}" CASCADE`);
-    await cleanup.end();
+    await scratch?.drop();
   });
   beforeEach(async () => {
-    await pool.query(`TRUNCATE oauth_authorization_txns, oauth_authorization_codes, oauth_access_tokens, oauth_refresh_tokens, mcp_audit_log, tv_device_codes RESTART IDENTITY CASCADE`);
+    await pool.query(`TRUNCATE oauth_authorization_txns, oauth_authorization_codes, oauth_access_tokens, oauth_refresh_tokens, mcp_audit_log, tv_device_codes, user_sessions RESTART IDENTITY CASCADE`);
   });
 
   it('deletes txns older than 15 minutes; keeps fresh ones', async () => {
@@ -122,8 +108,21 @@ describeIfDb('runOauthSweep', () => {
     expect(r.rows[0].n).toBe(1);
   });
 
+  it('deletes device sessions whose refresh token has expired; keeps live ones', async () => {
+    await pool.query(
+      `INSERT INTO user_sessions (id, user_id, expires_at, revoked_at)
+       VALUES ('sid-expired', $1, NOW() - interval '1 minute', NOW() - interval '2 days'),
+              ('sid-live', $1, NOW() + interval '29 days', NULL)`,
+      [userId],
+    );
+    const c = await runOauthSweep();
+    expect(c.sessions).toBe(1);
+    const r = await pool.query(`SELECT id FROM user_sessions`);
+    expect(r.rows.map(x => x.id)).toEqual(['sid-live']);
+  });
+
   it('returns all-zero counts when there is nothing to sweep', async () => {
     const c = await runOauthSweep();
-    expect(c).toEqual({ txns: 0, codes: 0, access: 0, refresh: 0, audit: 0, tvDeviceCodes: 0 });
+    expect(c).toEqual({ txns: 0, codes: 0, access: 0, refresh: 0, audit: 0, tvDeviceCodes: 0, sessions: 0 });
   });
 });

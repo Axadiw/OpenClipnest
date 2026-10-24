@@ -45,6 +45,7 @@ import {
   reconcileUserQuota, STORAGE_WARN_EMAIL_THRESHOLD, QUOTA_WARN_THRESHOLD,
 } from '../services/quota-reconciler.js';
 import type { NotificationKind } from '../types.js';
+import { isAccessLocked } from '../db/queries/access.js';
 import { verifyPassword, DUMMY_HASH } from '../services/auth.js';
 import {
   recordFtpsUploadAborted, recordFtpsUploadCompleted, uploadExtBucket, originFor,
@@ -163,6 +164,13 @@ router.post('/auth/verify', async (req, res) => {
       return;
     }
 
+    // A locked account keeps its web sign-in but not its cameras. Checked after
+    // the password so a wrong password never reveals the account state.
+    if (await isAccessLocked(user.internalId)) {
+      res.json({ valid: false, reason: 'access_locked' });
+      return;
+    }
+
     await resetLoginAttempts(user.internalId, 'ftp');
 
     // The ATTEMPT side of the ingest funnel. Counted here and not in the FTPS
@@ -214,7 +222,7 @@ router.get('/users/:uuid/quota', async (req, res) => {
   // post-upload anyway) get the headroom cap so a single over-quota STOR can't
   // stream up to the 100 GiB sanity cap before the authoritative claim deletes it.
   const autoDeleteOldest = await getAutoDeleteOldest(user.internalId);
-  res.json({ ...quota, autoDeleteOldest });
+  res.json({ ...quota, autoDeleteOldest, uploadsBlocked: await isAccessLocked(user.internalId) });
 });
 
 /**
@@ -256,16 +264,18 @@ router.post('/users/:uuid/transfer-check', async (req, res) => {
 
   const result = await checkAndResetTransfer(user.internalId);
   const quota = await getUserQuota(user.internalId);
+  const locked = await isAccessLocked(user.internalId);
 
   res.json({
     transferUsageBytes: result.transferUsageBytes,
     transferResetAt: result.transferResetAt,
     transferLimitBytes: quota?.transferLimitBytes ?? 0,
-    // A limit of 0 means "no transfer limit" (no plan, or a plan that only
-    // caps disk) — the same convention every other quota check uses. Comparing
-    // usage against it would read 0 < 0 and block every upload.
-    withinLimit: !quota || quota.transferLimitBytes <= 0
-      || result.transferUsageBytes < quota.transferLimitBytes,
+    // A locked account transfers nothing. Otherwise a limit of 0 means "no
+    // transfer limit" (no plan, or a plan that only caps disk) — the same
+    // convention every other quota check uses. Comparing usage against it
+    // would read 0 < 0 and block every upload.
+    withinLimit: !locked && (!quota || quota.transferLimitBytes <= 0
+      || result.transferUsageBytes < quota.transferLimitBytes),
   });
 });
 
@@ -432,6 +442,13 @@ router.post('/users/:uuid/file-complete', async (req, res) => {
       return;
     }
 
+    // A locked account takes no new recordings: refuse before claiming any
+    // space. FTPS treats 507 as a rejection and deletes the uploaded object.
+    if (await isAccessLocked(user.internalId)) {
+      res.status(507).json({ ok: false, claimed: false, reason: 'access_locked' });
+      return;
+    }
+
     // 3. HeadObject verify with the same retry loop as /file-uploaded.
     try {
       await headObjectWithRetry(s3Bucket, s3Key, user.encryptionSalt);
@@ -520,6 +537,14 @@ router.post('/users/:uuid/file-complete', async (req, res) => {
         // unaffected (it still SETNX-dedups its own publishes).
         await clearThumbnailDedup(result.eventId);
         await publishThumbnailUnique(result.eventId, result.ownerId, { notify: true });
+        // A merge-artifact heal can split a previously merged view out into a
+        // NEW event. Its file was linked (and usually sidecar-ready) long ago,
+        // so the redrive never sees it — without this publish the event would
+        // stay without a thumbnail forever. notify:false: the file was already
+        // announced when it first arrived.
+        for (const rehomedId of result.rehomedEventIds ?? []) {
+          await publishThumbnailUnique(rehomedId, result.ownerId, { notify: false });
+        }
       } catch (publishErr) {
         // Redrive heals within ~1 min — never fail the request.
         console.warn(

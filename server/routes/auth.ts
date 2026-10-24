@@ -18,6 +18,8 @@ import {
 import { loginRateLimit, loginEmailRateLimit, refreshTokenRateLimit } from '../middleware/rateLimit.js';
 import { requireAuth } from '../middleware/auth.js';
 import { auditLog } from '../services/audit.js';
+import { issueSessionTokens } from '../services/sessions.js';
+import { createSession, touchSession, revokeSession } from '../db/queries/sessions.js';
 import { normalizeEmail } from '../utils/normalizeEmail.js';
 
 // Core authentication: password login, token refresh and sign-out. Password
@@ -103,8 +105,7 @@ router.post('/login', loginRateLimit, loginEmailRateLimit, async (req, res) => {
       isAdmin: user.isAdmin,
       tokenGen: user.tokenGeneration,
     };
-    const token = generateAccessToken(basePayload);
-    const refreshToken = generateRefreshToken(basePayload);
+    const { token, refreshToken } = await issueSessionTokens(basePayload);
 
     res.json({
       token,
@@ -175,12 +176,27 @@ router.post('/refresh', refreshTokenRateLimit, async (req, res) => {
       return;
     }
 
+    // The refresh keeps the device's session. A token from before per-device
+    // sessions has none and gets one here, so it can be signed out on its own
+    // from now on.
+    let sid: string;
+    if (payload.sid) {
+      if (!(await touchSession(payload.sid, user.internalId))) {
+        res.status(401).json({ error: 'Refresh token revoked' });
+        return;
+      }
+      sid = payload.sid;
+    } else {
+      sid = await createSession(user.internalId);
+    }
+
     const basePayload = {
       userId: user.internalId,
       userUuid: user.id,
       email: user.email,
       isAdmin: user.isAdmin,
       tokenGen: currentGen,
+      sid,
     };
     const token = generateAccessToken(basePayload);
     const newRefreshToken = generateRefreshToken(basePayload);
@@ -193,15 +209,32 @@ router.post('/refresh', refreshTokenRateLimit, async (req, res) => {
   }
 });
 
-// POST /logout — revoke every session for the current user by bumping the
-// global token_generation, invalidating all outstanding access + refresh tokens.
-// Consistent with password-change / passkey-removal, which already bump it.
-// This is sign-out-everywhere by design; per-device revocation is future work.
+// POST /logout — server-side sign-out.
+//   { "scope": "device" } ends only the session of the token that made the
+//   request; the user's other devices stay signed in.
+//   { "scope": "all" }, or no scope, bumps token_generation and ends every
+//   session (and MCP grant) at once — consistent with password change and
+//   passkey removal. No scope stays "all" because that is what the endpoint
+//   did before scopes existed.
+// A token from before per-device sessions has no session to end, so "device"
+// falls back to "all" for it: the sign-out must actually end the session. The
+// answer says which one happened.
 router.post('/logout', requireAuth, async (req, res) => {
+  const requested = req.body?.scope;
+  if (requested !== undefined && requested !== 'device' && requested !== 'all') {
+    res.status(400).json({ error: 'scope must be "device" or "all"' });
+    return;
+  }
   try {
-    await bumpTokenGeneration(req.user!.userId);
-    auditLog('LOGOUT', { userId: req.user!.userId, ip: req.ip });
-    res.json({ success: true });
+    const sid = req.user!.sid;
+    const scope = requested === 'device' && sid ? 'device' : 'all';
+    if (scope === 'device') {
+      await revokeSession(sid!, req.user!.userId);
+    } else {
+      await bumpTokenGeneration(req.user!.userId);
+    }
+    auditLog('LOGOUT', { userId: req.user!.userId, scope, ip: req.ip });
+    res.json({ success: true, scope });
   } catch (err) {
     console.error('Logout error:', err instanceof Error ? err.message : 'Unknown error');
     res.status(500).json({ error: 'Logout failed' });

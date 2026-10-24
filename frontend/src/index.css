@@ -202,6 +202,11 @@ input:-webkit-autofill:active{
 .btn-cache-all{flex-shrink:0}
 .btn-filter{position:relative}
 .badge{background:var(--accent);color:var(--on-accent);font-size:.65rem;padding:1px 5px;border-radius:10px;margin-left:2px}
+/* Plan kind in the admin plans table: sold = accent tint, manual-only = muted */
+.badge.badge-paid{background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent);margin-left:0}
+.badge.badge-manual{background:var(--bg3);color:var(--text2);margin-left:0}
+.badge.badge-held{background:var(--usage-yellow);color:#1a202c}
+.badge.badge-progress{background:var(--usage-red);color:#fff}
 /* Filter panel typography is unified at .8rem so labels, chips, and date
    inputs sit at the same scale — the previous mix of .8/.75/default was
    the "different font sizes" complaint. */
@@ -335,9 +340,13 @@ input:-webkit-autofill:active{
 .video-controls-seek{position:relative;flex:1;min-width:60px;height:16px;display:flex;align-items:center;cursor:pointer;touch-action:none}
 .video-controls-seek:focus-visible{outline:2px solid var(--success);outline-offset:2px;border-radius:3px}
 .video-controls-seek-track{position:absolute;left:0;right:0;height:5px;border-radius:3px;background:rgba(255,255,255,.25)}
-.video-controls-seek-buffered{position:absolute;left:0;height:5px;border-radius:3px;background:rgba(255,255,255,.45)}
+.video-controls-seek-buffered{position:absolute;height:5px;border-radius:3px;background:rgba(255,255,255,.45)}
 .video-controls-seek-played{position:absolute;left:0;height:5px;border-radius:3px;background:var(--success)}
 .video-controls-seek-thumb{position:absolute;top:50%;width:13px;height:13px;border-radius:50%;background:var(--success);transform:translate(-50%,-50%);box-shadow:0 0 2px rgba(0,0,0,.6)}
+.video-controls-preview{position:absolute;bottom:22px;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:3px;padding:4px;background:rgba(20,20,20,.96);border:1px solid rgba(255,255,255,.15);border-radius:6px;pointer-events:none;z-index:12}
+.video-controls-preview-frame{display:block;width:160px;height:auto;max-height:120px;border-radius:3px;background:#000;transition:opacity .15s}
+.video-controls-preview[data-state="loading"] .video-controls-preview-frame{opacity:.4}
+.video-controls-preview-time{font-size:.75rem;line-height:1;color:#fff}
 .video-controls-volume{width:64px;flex-shrink:0;accent-color:var(--success);cursor:pointer}
 .video-controls-speed-wrap{position:relative;flex-shrink:0}
 .video-controls-speed{width:auto;min-width:34px;padding:0 6px;font-size:.78rem;font-weight:600}
@@ -709,12 +718,13 @@ a.timeline-player-dropdown-item{cursor:pointer}
 .invite-check-col{width:32px;text-align:center}
 .invite-notice{font-size:.85rem;color:var(--text2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;margin-bottom:10px}
 .invite-filters{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
-.invite-filters .btn.active{border-color:var(--accent);color:var(--accent)}
+.invite-filters .btn.active{background:transparent;border-color:var(--accent);color:var(--accent)}
 .invite-empty{color:var(--text2);font-size:.85rem}
 .invite-code-cell{font-family:'JetBrains Mono',monospace;letter-spacing:.06em;margin-right:8px}
 .invite-status{font-size:.78rem;padding:2px 8px;border-radius:999px;border:1px solid var(--border);color:var(--text2)}
 .invite-status.is-available{border-color:var(--accent);color:var(--accent)}
 .invite-status.is-revoked{border-color:var(--danger);color:var(--danger)}
+.invite-status.is-expired{border-color:var(--usage-orange);color:var(--usage-orange)}
 /* Changelog tab — markdown rendered from CHANGELOG.md. Typography mirrors
    the public legal pages (Terms / Privacy) but swapped onto the admin
    theme variables. Selectors are written as .admin-section.admin-changelog
@@ -840,6 +850,7 @@ input[type="number"]:focus{border-color:var(--accent)}
 .processing-status-chevron.is-open{transform:rotate(180deg)}
 .processing-status-spinner{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--accent);animation:processing-pulse 1.2s ease-in-out infinite}
 @keyframes processing-pulse{0%,100%{opacity:.3}50%{opacity:1}}
+.account-locked-banner{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;margin:8px 16px;padding:10px 14px;background:var(--bg2);border:1px solid var(--usage-yellow);border-left-width:4px;border-radius:var(--radius);font-size:.9rem;color:var(--text)}
 .processing-status-files{list-style:none;margin:6px 0 0;padding:6px;background:var(--bg3);border-radius:var(--radius);max-height:200px;overflow-y:auto;display:flex;flex-direction:column;gap:2px}
 .processing-status-file{font-family:monospace;font-size:.8rem;color:var(--text);padding:2px 4px;word-break:break-all}
 .processing-status-file-name{display:block}
@@ -1094,6 +1105,12 @@ input[type="number"]:focus{border-color:var(--accent)}
     white-space:normal;
     overflow-wrap:anywhere;
   }
+  /* An edition may add a sixth tab: they no longer fit one row, so lay them
+     out as a 3-column grid (only then; 4-5 tabs keep the single row). */
+  .settings-nav:has(> :nth-child(6)){
+    display:grid;
+    grid-template-columns:repeat(3,minmax(0,1fr));
+  }
 }
 
 /* 404 page */
@@ -1217,3 +1234,6 @@ html:has(.public-layout) .cookie-banner{
   cursor:pointer;padding:2px 6px;border-radius:4px}
 .toast-close:hover{color:var(--text);background:var(--bg3)}
 @keyframes toast-in{from{opacity:0;transform:translate(-50%,8px)}to{opacity:1;transform:translate(-50%,0)}}
+.account-locked-action{margin-left:auto}
+.account-locked-deletion{display:inline-block;margin-right:10px}
+@media (max-width:600px){.account-locked-deletion{display:block;margin:0 0 8px}}

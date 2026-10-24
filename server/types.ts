@@ -89,6 +89,13 @@ export interface User {
   bannedReason?: string | null;
   activeBanCount?: number;
   deletionStatus?: 'active' | 'pending_deletion' | 'deleting' | 'failed';
+  // adminLocked: locked by an administrator; planLocked: locked for lack of an active plan; accessLocked: either.
+  accessLocked?: boolean;
+  adminLocked?: boolean;
+  planLocked?: boolean;
+  planOverrideAt?: string | null;
+  planSource?: 'admin' | 'invite' | 'subscription';
+  planExpiresAt?: string | null;
 }
 
 export interface BanStatus {
@@ -103,6 +110,11 @@ export interface Plan {
   name: string;
   diskSpaceBytes: number;
   monthlyTransferBytes: number;
+  isPublic: boolean;
+  sortOrder: number;
+  monthlyPriceCents: number | null;
+  currency: string;
+  priceLookupKey: string | null;
   createdAt: string;
 }
 
@@ -120,6 +132,10 @@ export interface JwtPayload {
   email: string;
   isAdmin: boolean;
   tokenGen?: number;
+  // The device session these tokens belong to (`user_sessions.id`). Absent on
+  // tokens issued before per-device sessions existed; those rely on tokenGen
+  // alone until their next refresh opens a session.
+  sid?: string;
   mediaEventId?: string;
   // Set on media tokens MINTED BY the MCP server (get_video). Binds the media
   // token to the issuing OAuth refresh-token family so revoking the MCP grant
@@ -146,7 +162,16 @@ export type NotificationKind =
   // A new recording finished processing (thumbnail generated). Emitted by the
   // thumbnail worker's success path; carries `details.eventId` + `details.camera`
   // so the push fan-out can build a thumbnail-bearing notification.
-  | 'new_recording';
+  | 'new_recording'
+  // A scheduled change to a smaller plan was called off because the
+  // recordings no longer fit in it. details.plan = that plan's name.
+  | 'plan_change_cancelled'
+  // The account's recordings will be deleted because its access ended for
+  // lack of an active plan. details.at = the deletion day (ISO, 00:00 UTC),
+  // details.final = this is the notice the day before.
+  | 'content_deletion_scheduled'
+  // The account's recordings were deleted for that reason (the account stays).
+  | 'content_deleted';
 
 export interface Notification {
   id: string;

@@ -17,6 +17,7 @@ export const edition: ServerExtensions = {
     // Delivered through the Clipnest push relay, when one is configured.
     push: relayUrlFromEnv() !== null,
     mcp: true,
+    paidPlans: false,
   },
   // The one account is both operator and owner; no plan ⇒ unlimited. It comes
   // only from the configuration, so an empty database without it stops the

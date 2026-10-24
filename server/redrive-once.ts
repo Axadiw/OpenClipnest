@@ -3,14 +3,15 @@
  * (every 1 min, activeDeadlineSeconds 60). The single minute-cadence safety
  * net of the state-machine pipeline (spec §7): re-publishes thumbnail/sidecar
  * jobs for linked pending_sidecar rows that are due, relinks a bounded batch
- * of orphaned (no-elf) files, and recomputes stale playback_ready flags.
+ * of orphaned (no-elf) files, re-publishes thumbnail jobs for events that
+ * never got one, and recomputes stale playback_ready flags.
  * Replaces reconcile-once.ts' 8-pass monolith together with audit-once.ts
  * (Task 9).
  */
-import { Sentry } from './sentry.js';
+import { captureException, closeErrorReporting } from './errorReporting.js';
 import { initDb } from './db/index.js';
 import { getSidecarRedriveBatch } from './db/queries/processingState.js';
-import { reconcileStalePlaybackReady } from './services/reconcilers.js';
+import { reconcileMissingThumbnails, reconcileStalePlaybackReady } from './services/reconcilers.js';
 import { relinkUnlinkedFiles } from './services/ingest/relinkUnlinkedFiles.js';
 import { publishThumbnailUnique } from './services/streamsClient.js';
 import { closeRedis } from './utils/redis.js';
@@ -55,6 +56,16 @@ async function main(): Promise<void> {
     console.error('redrive: relink failed:', err instanceof Error ? err.message : String(err));
   }
 
+  // Events whose thumbnail job was never queued. The sidecar batch above only
+  // sees files still in pending_sidecar, so an event created around an
+  // already-ready file (a merge-artifact heal re-homing a displaced view) is
+  // invisible to it and would keep a NULL thumbnail forever.
+  try {
+    await reconcileMissingThumbnails();
+  } catch (err) {
+    console.error('redrive: missing thumbnails failed:', err instanceof Error ? err.message : String(err));
+  }
+
   try {
     await reconcileStalePlaybackReady();
   } catch (err) {
@@ -63,11 +74,11 @@ async function main(): Promise<void> {
 }
 
 main()
-  .then(async () => { await closeRedis(); await Sentry.close(200); process.exit(0); })
+  .then(async () => { await closeRedis(); await closeErrorReporting(200); process.exit(0); })
   .catch(async (err) => {
     console.error('redrive: failed:', err instanceof Error ? err.stack ?? err.message : String(err));
-    Sentry.captureException(err);
-    await Sentry.close(2000);
+    captureException(err);
+    await closeErrorReporting(2000);
     await closeRedis().catch(() => {});
     process.exit(1);
   });

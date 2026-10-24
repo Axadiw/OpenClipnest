@@ -1,8 +1,8 @@
 /**
  * DB-level integration tests for completeUpload (Task 5.5).
  *
- * Uses the scratch-schema pattern (migrateToSchema + __setPoolForTest) so
- * the real completeUpload function runs against an isolated Postgres schema.
+ * Uses a scratch database (createScratchDb + __setPoolForTest) so
+ * the real completeUpload function runs against an isolated Postgres database.
  *
  * Run with a Postgres URL:
  *   DATABASE_URL_TEST=... npx vitest run server/services/ingest/completeUpload.db.test.ts
@@ -11,14 +11,11 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { Pool } from 'pg';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { dirname } from 'node:path';
-import { migrateToSchema } from '../../testing/migrate-schema.js';
+import { createScratchDb, type ScratchDb } from '../../testing/scratch-db.js';
 import { story } from '../../testing/story.js';
 import { __setPoolForTest } from '../../db/index.js';
 import { completeUpload } from './completeUpload.js';
-import { removeDeletedFileFromEvents } from '../../db/queries/events.js';
+import { removeDeletedFileFromEvents, getEventsMissingThumbnail } from '../../db/queries/events.js';
 import { relinkUnlinkedFiles } from './relinkUnlinkedFiles.js';
 
 // Stub out Redis SETNX in relinkUnlinkedFiles so the DB tests don't need a
@@ -27,12 +24,9 @@ vi.mock('../streamsClient.js', () => ({
   publishThumbnailUnique: vi.fn().mockResolvedValue('published'),
 }));
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
 // Migrations are three levels up from server/services/ingest/ → server/db/migrations/
-const MIGRATIONS_DIR = join(__dirname, '..', '..', 'db', 'migrations');
 
 const TEST_DB_URL = process.env.DATABASE_URL_TEST ?? process.env.DATABASE_URL;
-const SCRATCH_SCHEMA = `test_complete_upload_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -79,17 +73,13 @@ function buildEventId(userUuid: string, ts: string, camera: string): string {
 
 describe.skipIf(!TEST_DB_URL)('completeUpload DB integration', () => {
   let pool: Pool;
+  let scratch: ScratchDb | undefined;
   let userUuid: string;
   let userId: number;
 
   beforeAll(async () => {
-    pool = new Pool({
-      connectionString: TEST_DB_URL,
-      max: 10,
-      options: `-c search_path="${SCRATCH_SCHEMA}",public`,
-    });
-    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${SCRATCH_SCHEMA}"`);
-    await migrateToSchema(pool, SCRATCH_SCHEMA, MIGRATIONS_DIR);
+    scratch = await createScratchDb({ max: 10 });
+    pool = scratch.pool;
 
     // Seed a plan required by users FK
     await pool.query(
@@ -97,17 +87,12 @@ describe.skipIf(!TEST_DB_URL)('completeUpload DB integration', () => {
        VALUES (1, 'free', 1000000000, 1000000000) ON CONFLICT DO NOTHING`,
     );
 
-    // Redirect the app db handle to the scratch schema pool
+    // Redirect the app db handle to the scratch database pool
     __setPoolForTest(pool);
   }, 120_000);
 
   afterAll(async () => {
-    if (!pool) return;
-    // Restore nothing — test process ends anyway; cleanup the scratch schema
-    const cleanup = new Pool({ connectionString: TEST_DB_URL, max: 1 });
-    await cleanup.query(`DROP SCHEMA IF EXISTS "${SCRATCH_SCHEMA}" CASCADE`);
-    await cleanup.end();
-    await pool.end();
+    await scratch?.drop();
   }, 60_000);
 
   beforeEach(async () => {
@@ -850,6 +835,8 @@ describe.skipIf(!TEST_DB_URL)('completeUpload DB integration', () => {
     });
     expect(result.state).toBe('pending_sidecar');
     expect((result as { eventId?: string }).eventId).toBe(keeperId);
+    // The re-homed artifact's event is new and needs its own thumbnail job.
+    expect((result as { rehomedEventIds?: string[] }).rehomedEventIds).toEqual([artifactId]);
 
     // HEAL: the partner is merged away — P no longer exists.
     const { rows: pRows } = await pool.query(`SELECT id FROM events WHERE id = $1`, [partnerId]);
@@ -914,6 +901,11 @@ describe.skipIf(!TEST_DB_URL)('completeUpload DB integration', () => {
     const rReal = await completeUpload({ userId, userUuid, s3Bucket: 'recordings', s3Key: s3ZoomReal, originalFilename: `${camera}_01_${tsWide}.mp4`, fileSizeBytes: 1000 });
     expect(rReal.state).toBe('pending_sidecar'); // NOT 'duplicate'
     expect((rReal as { eventId?: string }).eventId).toBe(wideEventId);
+    // The re-homed artifact's event is new and never got a thumbnail job
+    // before this fix. The caller learns its id from here.
+    expect((rReal as { rehomedEventIds?: string[] }).rehomedEventIds).toEqual([artifactEventId]);
+    // Plain merges/links report nothing re-homed.
+    expect((rArtifact as { rehomedEventIds?: string[] }).rehomedEventIds).toBeUndefined();
 
     // Wide event's view 01 slot now points at the REAL zoom (healed).
     {
@@ -932,6 +924,17 @@ describe.skipIf(!TEST_DB_URL)('completeUpload DB integration', () => {
     expect(notif[0].n).toBe(0);
     const { rows: fm } = await pool.query(`SELECT processing_state FROM file_metadata WHERE s3_key = $1`, [s3ZoomReal]);
     expect(fm[0].processing_state).toBe('pending_sidecar');
+
+    // Redrive safety net: the re-homed event has never had a thumbnail job,
+    // so the missing-thumbnail sweep must pick it up…
+    const missingIds = async () => (await getEventsMissingThumbnail(10_000)).map((e) => e.id);
+    expect(await missingIds()).toContain(artifactEventId);
+    // …but stop once the worker has taken it (it owns retries from there),
+    await pool.query(`UPDATE events SET thumbnail_attempts = 1 WHERE id = $1`, [artifactEventId]);
+    expect(await missingIds()).not.toContain(artifactEventId);
+    // and never chase a tombstoned event, whose thumbnail stays NULL for good.
+    await pool.query(`UPDATE events SET thumbnail_attempts = 0, playback_unplayable = TRUE WHERE id = $1`, [artifactEventId]);
+    expect(await missingIds()).not.toContain(artifactEventId);
   });
 
   // ── R1 path: every video → pending_sidecar (R2c inline path removed) ────────

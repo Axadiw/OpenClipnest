@@ -22,6 +22,8 @@ import {
   getOrphansOlderThan,
   deleteOrphanObjectRow,
   withUserAdvisoryLock,
+  getUserIdsWithUnfinishedContentDeletion,
+  hasUnfinishedContentDeletion,
 } from '../db/queries/storage.js';
 import { getUserByUuid } from '../db/queries/users.js';
 import { getAllUserUuids, getAllUserUuidsAnyStatus } from '../db/queries/users.js';
@@ -172,10 +174,11 @@ export async function runStorageReconciliation(
   const start = Date.now();
   console.log(`Storage reconciliation: starting (orphan sweep ${scanOrphans ? 'ON' : 'OFF'})`);
 
-  const [users, knownUuids, protectedUuidList] = await Promise.all([
+  const [users, knownUuids, protectedUuidList, contentDeletionInProgress] = await Promise.all([
     getUsersForScan(),
     getAllUserUuids(),
     getAllUserUuidsAnyStatus(),
+    getUserIdsWithUnfinishedContentDeletion(),
   ]);
   // Purge GUARD: every user's UUID regardless of admin flag or deletion
   // status. Orphan DETECTION uses the active-only `knownUuids` (so objects
@@ -240,6 +243,15 @@ export async function runStorageReconciliation(
       stepOneStoppedEarly = true;
       break;
     }
+    // An account whose recordings are being deleted: its rows are already
+    // gone while some objects may still be there, and backfilling rows from
+    // those objects would bring the deleted recordings back. The deletion
+    // also holds this user's LOCK_NS_QUOTA lock while it runs; this covers
+    // the time between its runs.
+    if (contentDeletionInProgress.has(user.id)) {
+      console.log(`Storage reconciliation: skipping user ${user.id} (content deletion in progress)`);
+      continue;
+    }
     usersScanned++;
     // Acquire the per-user LOCK_NS_QUOTA advisory lock that
     // `evictUserToFitPlan` (autoDelete) also holds. Without this,
@@ -257,6 +269,12 @@ export async function runStorageReconciliation(
     let ranInsideLock: boolean | null;
     try {
       ranInsideLock = await withUserAdvisoryLock(user.id, async () => {
+    // Asked again under the lock: the set above was read at the start of the
+    // run, and a content deletion may have reached its point of no return
+    // since (the two jobs overlap every morning). A deletion that starts
+    // while we hold the lock cannot take it, and what we re-create then is
+    // older than its cutoff, so its next run removes it again.
+    if (await hasUnfinishedContentDeletion(user.id)) return false;
     try {
       // Stream the listing rather than collect
       // all 500k entries — for a heavy account this used to be ~250 MiB of
@@ -565,6 +583,10 @@ export async function runStorageReconciliation(
         `Storage reconciliation: lock acquire failed for user ${user.uuid}:`,
         err instanceof Error ? err.message : String(err),
       );
+      continue;
+    }
+    if (ranInsideLock === false) {
+      console.log(`Storage reconciliation: skipping user ${user.id} (content deletion in progress)`);
       continue;
     }
     if (ranInsideLock === null) {

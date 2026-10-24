@@ -5,7 +5,7 @@
 // (server/index.ts) wires DB/Redis startup and `listen()` around this.
 import express from 'express';
 import helmet from 'helmet';
-import { setupSentryExpressErrorHandler } from './sentry.js';
+import { setupErrorReportingExpressHandler } from './errorReporting.js';
 import { CONFIG } from './config.js';
 import { getRedis } from './utils/redis.js';
 import { requireAuth } from './middleware/auth.js';
@@ -185,15 +185,15 @@ export function createApp(ext: ServerExtensions): express.Express {
     next();
   }, internalRouter);
 
-  // Malformed JSON body / oversized body → quiet 4xx, NOT a Sentry issue.
-  // MUST come before setupSentryExpressErrorHandler so the consumed error never
-  // reaches the Sentry handler. See server/middleware/jsonError.ts.
+  // Malformed JSON body / oversized body → quiet 4xx, NOT a reported error.
+  // MUST come before setupErrorReportingExpressHandler so the consumed error
+  // never reaches the reporter. See server/middleware/jsonError.ts.
   app.use(malformedBodyErrorHandler);
 
-  // Sentry error handler — must come after all routes so it captures
-  // unhandled Express errors before the default 500 handler responds.
-  // No-op when SENTRY_DSN is unset.
-  setupSentryExpressErrorHandler(app);
+  // The edition's error-reporting handler — must come after all routes so it
+  // captures unhandled Express errors before the default 500 handler
+  // responds. No-op when the edition installed no reporter.
+  setupErrorReportingExpressHandler(app);
 
   return app;
 }

@@ -1,3 +1,56 @@
+CREATE TABLE public.account_notices (
+    user_id integer NOT NULL,
+    kind text NOT NULL,
+    ref_at timestamp with time zone NOT NULL,
+    sent_at timestamp with time zone DEFAULT now() NOT NULL,
+    provider_message_id text,
+    CONSTRAINT account_notices_kind_check CHECK ((kind = ANY (ARRAY['content_deletion_first'::text, 'content_deletion_final'::text, 'content_deleted'::text])))
+);
+CREATE TABLE public.content_deletion_runs (
+    id integer NOT NULL,
+    started_at timestamp with time zone DEFAULT now() NOT NULL,
+    finished_at timestamp with time zone,
+    mode text NOT NULL,
+    candidates integer DEFAULT 0 NOT NULL,
+    first_notices integer DEFAULT 0 NOT NULL,
+    final_notices integer DEFAULT 0 NOT NULL,
+    due integer DEFAULT 0 NOT NULL,
+    deleted integer DEFAULT 0 NOT NULL,
+    resumed integer DEFAULT 0 NOT NULL,
+    held integer DEFAULT 0 NOT NULL,
+    skipped integer DEFAULT 0 NOT NULL,
+    failed integer DEFAULT 0 NOT NULL,
+    deferred integer DEFAULT 0 NOT NULL,
+    truncated boolean DEFAULT false NOT NULL,
+    renotices integer DEFAULT 0 NOT NULL,
+    holds_released integer DEFAULT 0 NOT NULL
+);
+CREATE SEQUENCE public.content_deletion_runs_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.content_deletion_runs_id_seq OWNED BY public.content_deletion_runs.id;
+CREATE TABLE public.content_deletions (
+    user_id integer NOT NULL,
+    lock_started_at timestamp with time zone NOT NULL,
+    delete_after timestamp with time zone NOT NULL,
+    held_at timestamp with time zone,
+    held_by integer,
+    hold_note text,
+    started_at timestamp with time zone,
+    finished_at timestamp with time zone,
+    objects_removed integer DEFAULT 0 NOT NULL,
+    rows_removed integer DEFAULT 0 NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    notice_ref_at timestamp with time zone,
+    first_stated_at timestamp with time zone,
+    hold_reason text,
+    hold_expires_at timestamp with time zone,
+    CONSTRAINT content_deletions_hold_reason_check CHECK (((hold_reason IS NULL) OR (hold_reason = ANY (ARRAY['admin'::text, 'undeliverable'::text]))))
+);
 CREATE TABLE public.email_tokens (
     id integer NOT NULL,
     user_id integer NOT NULL,
@@ -69,7 +122,10 @@ CREATE TABLE public.invite_codes (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     used_at timestamp with time zone,
     used_by integer,
-    revoked_at timestamp with time zone
+    revoked_at timestamp with time zone,
+    expires_at timestamp with time zone,
+    plan_duration_days integer,
+    CONSTRAINT invite_codes_plan_duration_days_check CHECK ((plan_duration_days > 0))
 );
 CREATE SEQUENCE public.invite_codes_id_seq
     AS integer
@@ -212,12 +268,51 @@ CREATE SEQUENCE public.passkeys_id_seq
     NO MAXVALUE
     CACHE 1;
 ALTER SEQUENCE public.passkeys_id_seq OWNED BY public.passkeys.id;
+CREATE TABLE public.payment_customers (
+    user_id integer NOT NULL,
+    provider_customer_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE public.payment_events (
+    event_id text NOT NULL,
+    type text NOT NULL,
+    received_at timestamp with time zone DEFAULT now() NOT NULL,
+    processed_at timestamp with time zone,
+    error text
+);
+CREATE TABLE public.payment_reconcile_runs (
+    id integer NOT NULL,
+    started_at timestamp with time zone DEFAULT now() NOT NULL,
+    finished_at timestamp with time zone,
+    checked integer DEFAULT 0 NOT NULL,
+    drifted integer DEFAULT 0 NOT NULL,
+    failed integer DEFAULT 0 NOT NULL,
+    overrides_expired integer DEFAULT 0 NOT NULL,
+    downgrades_cancelled integer DEFAULT 0 NOT NULL,
+    truncated boolean DEFAULT false NOT NULL,
+    grants_expired integer DEFAULT 0 NOT NULL
+);
+CREATE SEQUENCE public.payment_reconcile_runs_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.payment_reconcile_runs_id_seq OWNED BY public.payment_reconcile_runs.id;
 CREATE TABLE public.plans (
     id integer NOT NULL,
     name text NOT NULL,
     disk_space_bytes bigint NOT NULL,
     monthly_transfer_bytes bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    is_public boolean DEFAULT false NOT NULL,
+    sort_order integer DEFAULT 0 NOT NULL,
+    monthly_price_cents integer,
+    currency text DEFAULT 'EUR'::text NOT NULL,
+    price_lookup_key text,
+    CONSTRAINT plans_price_pair_check CHECK (((monthly_price_cents IS NULL) = (price_lookup_key IS NULL))),
+    CONSTRAINT plans_public_needs_price_check CHECK (((NOT is_public) OR (price_lookup_key IS NOT NULL)))
 );
 CREATE SEQUENCE public.plans_id_seq
     AS integer
@@ -227,6 +322,33 @@ CREATE SEQUENCE public.plans_id_seq
     NO MAXVALUE
     CACHE 1;
 ALTER SEQUENCE public.plans_id_seq OWNED BY public.plans.id;
+CREATE TABLE public.purchase_statements (
+    id integer NOT NULL,
+    user_id integer NOT NULL,
+    kind text NOT NULL,
+    version text NOT NULL,
+    language text NOT NULL,
+    statement_text text NOT NULL,
+    terms_version text NOT NULL,
+    plan_name text NOT NULL,
+    price_lookup_key text NOT NULL,
+    from_price_lookup_key text,
+    request_id text,
+    accepted_at timestamp with time zone DEFAULT now() NOT NULL,
+    confirmation_invoice_id text,
+    confirmation_claimed_at timestamp with time zone,
+    confirmation_sent_at timestamp with time zone,
+    CONSTRAINT purchase_statements_kind_check CHECK ((kind = ANY (ARRAY['purchase'::text, 'upgrade'::text]))),
+    CONSTRAINT purchase_statements_language_check CHECK ((language = ANY (ARRAY['pl'::text, 'en'::text])))
+);
+CREATE SEQUENCE public.purchase_statements_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.purchase_statements_id_seq OWNED BY public.purchase_statements.id;
 CREATE TABLE public.push_devices (
     id bigint NOT NULL,
     user_id integer NOT NULL,
@@ -314,6 +436,29 @@ CREATE SEQUENCE public.storage_reconciliation_runs_id_seq
     NO MAXVALUE
     CACHE 1;
 ALTER SEQUENCE public.storage_reconciliation_runs_id_seq OWNED BY public.storage_reconciliation_runs.id;
+CREATE TABLE public.subscriptions (
+    id integer NOT NULL,
+    user_id integer NOT NULL,
+    provider_subscription_id text NOT NULL,
+    status text NOT NULL,
+    price_lookup_key text,
+    current_period_end timestamp with time zone,
+    cancel_at timestamp with time zone,
+    canceled_at timestamp with time zone,
+    waiver_accepted_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    scheduled_price_lookup_key text,
+    scheduled_change_at timestamp with time zone
+);
+CREATE SEQUENCE public.subscriptions_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.subscriptions_id_seq OWNED BY public.subscriptions.id;
 CREATE TABLE public.tv_device_codes (
     id integer NOT NULL,
     user_code text NOT NULL,
@@ -431,6 +576,14 @@ CREATE TABLE public.user_scan_state (
     last_seen_s3_key text,
     full_rescan_due_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.user_sessions (
+    id text NOT NULL,
+    user_id integer NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_used_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    revoked_at timestamp with time zone
+);
 CREATE TABLE public.users (
     id integer NOT NULL,
     uuid text NOT NULL,
@@ -465,7 +618,13 @@ CREATE TABLE public.users (
     upload_30d_bytes bigint DEFAULT 0 NOT NULL,
     ftp_failed_login_attempts integer DEFAULT 0 NOT NULL,
     ftp_lockout_count integer DEFAULT 0 NOT NULL,
-    CONSTRAINT users_camera_profile_mode_check CHECK ((camera_profile_mode = ANY (ARRAY['auto'::text, 'reolink'::text, 'hikvision'::text, 'axis'::text, 'foscam'::text, 'custom'::text])))
+    access_locked_at timestamp with time zone,
+    plan_source text DEFAULT 'admin'::text NOT NULL,
+    plan_expires_at timestamp with time zone,
+    admin_locked_at timestamp with time zone,
+    plan_override_at timestamp with time zone,
+    CONSTRAINT users_camera_profile_mode_check CHECK ((camera_profile_mode = ANY (ARRAY['auto'::text, 'reolink'::text, 'hikvision'::text, 'axis'::text, 'foscam'::text, 'custom'::text]))),
+    CONSTRAINT users_plan_source_check CHECK ((plan_source = ANY (ARRAY['admin'::text, 'invite'::text, 'subscription'::text])))
 );
 CREATE SEQUENCE public.users_id_seq
     AS integer
@@ -475,6 +634,7 @@ CREATE SEQUENCE public.users_id_seq
     NO MAXVALUE
     CACHE 1;
 ALTER SEQUENCE public.users_id_seq OWNED BY public.users.id;
+ALTER TABLE ONLY public.content_deletion_runs ALTER COLUMN id SET DEFAULT nextval('public.content_deletion_runs_id_seq'::regclass);
 ALTER TABLE ONLY public.email_tokens ALTER COLUMN id SET DEFAULT nextval('public.email_tokens_id_seq'::regclass);
 ALTER TABLE ONLY public.file_metadata ALTER COLUMN id SET DEFAULT nextval('public.file_metadata_id_seq'::regclass);
 ALTER TABLE ONLY public.invite_codes ALTER COLUMN id SET DEFAULT nextval('public.invite_codes_id_seq'::regclass);
@@ -482,11 +642,14 @@ ALTER TABLE ONLY public.mcp_audit_log ALTER COLUMN id SET DEFAULT nextval('publi
 ALTER TABLE ONLY public.notifications ALTER COLUMN id SET DEFAULT nextval('public.notifications_id_seq'::regclass);
 ALTER TABLE ONLY public.passkey_backup_codes ALTER COLUMN id SET DEFAULT nextval('public.passkey_backup_codes_id_seq'::regclass);
 ALTER TABLE ONLY public.passkeys ALTER COLUMN id SET DEFAULT nextval('public.passkeys_id_seq'::regclass);
+ALTER TABLE ONLY public.payment_reconcile_runs ALTER COLUMN id SET DEFAULT nextval('public.payment_reconcile_runs_id_seq'::regclass);
 ALTER TABLE ONLY public.plans ALTER COLUMN id SET DEFAULT nextval('public.plans_id_seq'::regclass);
+ALTER TABLE ONLY public.purchase_statements ALTER COLUMN id SET DEFAULT nextval('public.purchase_statements_id_seq'::regclass);
 ALTER TABLE ONLY public.push_devices ALTER COLUMN id SET DEFAULT nextval('public.push_devices_id_seq'::regclass);
 ALTER TABLE ONLY public.storage_disk_corrections ALTER COLUMN id SET DEFAULT nextval('public.storage_disk_corrections_id_seq'::regclass);
 ALTER TABLE ONLY public.storage_orphan_objects ALTER COLUMN id SET DEFAULT nextval('public.storage_orphan_objects_id_seq'::regclass);
 ALTER TABLE ONLY public.storage_reconciliation_runs ALTER COLUMN id SET DEFAULT nextval('public.storage_reconciliation_runs_id_seq'::regclass);
+ALTER TABLE ONLY public.subscriptions ALTER COLUMN id SET DEFAULT nextval('public.subscriptions_id_seq'::regclass);
 ALTER TABLE ONLY public.tv_device_codes ALTER COLUMN id SET DEFAULT nextval('public.tv_device_codes_id_seq'::regclass);
 ALTER TABLE ONLY public.upload_events ALTER COLUMN id SET DEFAULT nextval('public.upload_events_id_seq'::regclass);
 ALTER TABLE ONLY public.user_appeals ALTER COLUMN id SET DEFAULT nextval('public.user_appeals_id_seq'::regclass);
@@ -494,6 +657,12 @@ ALTER TABLE ONLY public.user_bans ALTER COLUMN id SET DEFAULT nextval('public.us
 ALTER TABLE ONLY public.user_camera_profiles ALTER COLUMN id SET DEFAULT nextval('public.user_camera_profiles_id_seq'::regclass);
 ALTER TABLE ONLY public.user_identities ALTER COLUMN id SET DEFAULT nextval('public.user_identities_id_seq'::regclass);
 ALTER TABLE ONLY public.users ALTER COLUMN id SET DEFAULT nextval('public.users_id_seq'::regclass);
+ALTER TABLE ONLY public.account_notices
+    ADD CONSTRAINT account_notices_pkey PRIMARY KEY (user_id, kind, ref_at);
+ALTER TABLE ONLY public.content_deletion_runs
+    ADD CONSTRAINT content_deletion_runs_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.content_deletions
+    ADD CONSTRAINT content_deletions_pkey PRIMARY KEY (user_id);
 ALTER TABLE ONLY public.email_tokens
     ADD CONSTRAINT email_tokens_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.email_tokens
@@ -530,10 +699,20 @@ ALTER TABLE ONLY public.passkeys
     ADD CONSTRAINT passkeys_credential_id_unique UNIQUE (credential_id);
 ALTER TABLE ONLY public.passkeys
     ADD CONSTRAINT passkeys_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.payment_customers
+    ADD CONSTRAINT payment_customers_pkey PRIMARY KEY (user_id);
+ALTER TABLE ONLY public.payment_customers
+    ADD CONSTRAINT payment_customers_provider_customer_id_unique UNIQUE (provider_customer_id);
+ALTER TABLE ONLY public.payment_events
+    ADD CONSTRAINT payment_events_pkey PRIMARY KEY (event_id);
+ALTER TABLE ONLY public.payment_reconcile_runs
+    ADD CONSTRAINT payment_reconcile_runs_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.plans
     ADD CONSTRAINT plans_name_unique UNIQUE (name);
 ALTER TABLE ONLY public.plans
     ADD CONSTRAINT plans_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.purchase_statements
+    ADD CONSTRAINT purchase_statements_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.push_devices
     ADD CONSTRAINT push_devices_device_token_unique UNIQUE (device_token);
 ALTER TABLE ONLY public.push_devices
@@ -548,6 +727,10 @@ ALTER TABLE ONLY public.storage_orphan_objects
     ADD CONSTRAINT storage_orphan_objects_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.storage_reconciliation_runs
     ADD CONSTRAINT storage_reconciliation_runs_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.subscriptions
+    ADD CONSTRAINT subscriptions_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.subscriptions
+    ADD CONSTRAINT subscriptions_provider_subscription_id_unique UNIQUE (provider_subscription_id);
 ALTER TABLE ONLY public.tv_device_codes
     ADD CONSTRAINT tv_device_codes_device_code_unique UNIQUE (device_code);
 ALTER TABLE ONLY public.tv_device_codes
@@ -566,12 +749,15 @@ ALTER TABLE ONLY public.user_identities
     ADD CONSTRAINT user_identities_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.user_scan_state
     ADD CONSTRAINT user_scan_state_pkey PRIMARY KEY (user_id);
+ALTER TABLE ONLY public.user_sessions
+    ADD CONSTRAINT user_sessions_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_email_unique UNIQUE (email);
 ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_uuid_unique UNIQUE (uuid);
+CREATE INDEX account_notices_message_idx ON public.account_notices USING btree (provider_message_id) WHERE (provider_message_id IS NOT NULL);
 CREATE UNIQUE INDEX file_metadata_s3_bucket_s3_key_key ON public.file_metadata USING btree (s3_bucket, s3_key);
 CREATE INDEX idx_audit_action_ts ON public.mcp_audit_log USING btree (action, ts DESC NULLS LAST);
 CREATE INDEX idx_audit_user_ts ON public.mcp_audit_log USING btree (user_id, ts DESC NULLS LAST);
@@ -615,9 +801,22 @@ CREATE INDEX idx_user_bans_active ON public.user_bans USING btree (user_id, expi
 CREATE INDEX idx_user_bans_ip_active ON public.user_bans USING btree (source_ip, expires_at) WHERE (cancelled_at IS NULL);
 CREATE INDEX idx_user_camera_profiles_user_priority ON public.user_camera_profiles USING btree (user_id, priority);
 CREATE INDEX idx_user_identities_user ON public.user_identities USING btree (user_id);
+CREATE INDEX idx_user_sessions_expires ON public.user_sessions USING btree (expires_at);
+CREATE INDEX idx_user_sessions_user ON public.user_sessions USING btree (user_id);
 CREATE INDEX idx_users_deletion_status ON public.users USING btree (deletion_status) WHERE (deletion_status <> 'active'::text);
+CREATE UNIQUE INDEX plans_price_lookup_key_unique ON public.plans USING btree (price_lookup_key) WHERE (price_lookup_key IS NOT NULL);
+CREATE UNIQUE INDEX purchase_statements_confirmation_invoice_uq ON public.purchase_statements USING btree (confirmation_invoice_id) WHERE (confirmation_invoice_id IS NOT NULL);
+CREATE UNIQUE INDEX purchase_statements_request_uq ON public.purchase_statements USING btree (user_id, request_id) WHERE (request_id IS NOT NULL);
+CREATE INDEX purchase_statements_user_idx ON public.purchase_statements USING btree (user_id, accepted_at);
 CREATE UNIQUE INDEX storage_orphan_objects_s3_bucket_s3_key_key ON public.storage_orphan_objects USING btree (s3_bucket, s3_key);
+CREATE INDEX subscriptions_user_id_idx ON public.subscriptions USING btree (user_id);
 CREATE UNIQUE INDEX user_identities_provider_subject_key ON public.user_identities USING btree (provider, subject);
+ALTER TABLE ONLY public.account_notices
+    ADD CONSTRAINT account_notices_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.content_deletions
+    ADD CONSTRAINT content_deletions_held_by_fkey FOREIGN KEY (held_by) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.content_deletions
+    ADD CONSTRAINT content_deletions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.email_tokens
     ADD CONSTRAINT email_tokens_user_id_users_id_fk FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.event_view_files
@@ -660,6 +859,10 @@ ALTER TABLE ONLY public.passkey_backup_codes
     ADD CONSTRAINT passkey_backup_codes_user_id_users_id_fk FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.passkeys
     ADD CONSTRAINT passkeys_user_id_users_id_fk FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.payment_customers
+    ADD CONSTRAINT payment_customers_user_id_users_id_fk FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.purchase_statements
+    ADD CONSTRAINT purchase_statements_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.push_devices
     ADD CONSTRAINT push_devices_user_id_users_id_fk FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.push_prefs
@@ -670,6 +873,8 @@ ALTER TABLE ONLY public.storage_disk_corrections
     ADD CONSTRAINT storage_disk_corrections_user_id_users_id_fk FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.storage_orphan_objects
     ADD CONSTRAINT storage_orphan_objects_acknowledged_by_users_id_fk FOREIGN KEY (acknowledged_by) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.subscriptions
+    ADD CONSTRAINT subscriptions_user_id_users_id_fk FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.tv_device_codes
     ADD CONSTRAINT tv_device_codes_user_id_users_id_fk FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.upload_events
@@ -686,5 +891,7 @@ ALTER TABLE ONLY public.user_identities
     ADD CONSTRAINT user_identities_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.user_scan_state
     ADD CONSTRAINT user_scan_state_user_id_users_id_fk FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.user_sessions
+    ADD CONSTRAINT user_sessions_user_id_users_id_fk FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_plan_id_plans_id_fk FOREIGN KEY (plan_id) REFERENCES public.plans(id);

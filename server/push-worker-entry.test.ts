@@ -28,7 +28,6 @@ const {
   };
 });
 
-vi.mock('./sentry.js', () => ({}));
 vi.mock('./db/index.js', () => ({ initDb: (...a: unknown[]) => mockInitDb(...a) }));
 vi.mock('./db/queries/users.js', () => ({
   getUserByInternalId: (...a: unknown[]) => mockGetUserByInternalId(...a),
@@ -175,6 +174,30 @@ describe('buildPushForJob — new_recording payload shape', () => {
       details: {},
     });
     expect(opts.category).toBeUndefined();
+  });
+
+  it.each(['content_deletion_scheduled', 'content_deleted'])('sets no category for %s (an account notice about its data)', (kind) => {
+    const opts = buildPushForJob({
+      userId: 7,
+      notificationId: '11',
+      kind,
+      title: 'Recordings will be deleted',
+      message: 'Your recordings will be permanently deleted on 5 November 2026.',
+      details: { locKey: 'notif.content_deletion_scheduled.first', locArgs: ['2026-11-05'] },
+    });
+    expect(opts.category).toBeUndefined();
+    expect(opts.locKey).toBe('notif.content_deletion_scheduled.first');
+    expect(opts.titleLocKey).toBe(`notif.${kind}.title`);
+    expect(opts.locArgs).toEqual(['2026-11-05']);
+  });
+
+  it('plan_change_cancelled keeps the Mute… action', () => {
+    const opts = buildPushForJob({
+      userId: 7, notificationId: '12', kind: 'plan_change_cancelled', title: 'Plan change cancelled',
+      message: 'Your switch to Basic was cancelled because your recordings no longer fit in it.',
+      details: { plan: 'Basic', locKey: 'notif.plan_change_cancelled.plan', locArgs: ['Basic'] },
+    });
+    expect(opts.category).toBe('mutable');
   });
 });
 

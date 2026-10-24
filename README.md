@@ -265,8 +265,11 @@ with the remote: the TV shows a code and `<your address>/tv`; open that
 address on your phone or computer, sign in and enter the code. E-mail and
 password remain available as a fallback.
 
-**Analytics** stay off while an app is connected to your own server, and
-nothing the apps report can contain your server's address.
+**Analytics** in the apps are opt-in and off until you agree. If you agree,
+the apps count which screens and features are used on your own server too,
+but nothing they report can contain your server's address or anything about
+your account, cameras or recordings. Crash reports and performance traces
+are only sent while an app is connected to Clipnest Cloud.
 
 **Push notifications** reach the iPhone and iPad app and the Android app. The
 macOS, Windows and Apple TV apps show notifications inside the app only. On

@@ -15,9 +15,11 @@
  * Real Postgres only — `pg_advisory_*` is a Postgres-specific surface.
  * Skips when no DATABASE_URL is configured.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 import pg from 'pg';
-import { LOCK_NS_EVENTS, LOCK_NS_QUOTA, userLockKey } from './db/index.js';
+import { LOCK_NS_EVENTS, LOCK_NS_QUOTA, userLockKey, pool as realPool, __setPoolForTest } from './db/index.js';
+import { withUserAdvisoryLock } from './db/queries/storage.js';
 
 const TEST_URL =
   process.env.ADVISORY_LOCK_TEST_DATABASE_URL ?? process.env.DATABASE_URL;
@@ -114,5 +116,67 @@ describeIfDb('advisory lock namespace prefix', () => {
       probe.release();
       holder.release();
     }
+  });
+});
+
+// withUserAdvisoryLock holds one checked-out client for as long as its
+// callback runs (minutes, for a content wipe). These pin how that client is
+// treated when the connection misbehaves. A fake pool is enough: the contract
+// is about listeners and release(), not about Postgres.
+describe('withUserAdvisoryLock client handling', () => {
+  const originalPool = realPool;
+  afterEach(() => {
+    __setPoolForTest(originalPool);
+    vi.restoreAllMocks();
+  });
+
+  function fakeClient(opts: { unlockFails?: boolean } = {}) {
+    const client = Object.assign(new EventEmitter(), {
+      query: vi.fn(async (text: string) => {
+        if (text.includes('pg_try_advisory_lock')) return { rows: [{ locked: true }] };
+        if (text.includes('pg_advisory_unlock')) {
+          if (opts.unlockFails) throw new Error('Connection terminated');
+          return { rows: [{ pg_advisory_unlock: true }] };
+        }
+        throw new Error(`unexpected query ${text}`);
+      }),
+      release: vi.fn(),
+    });
+    __setPoolForTest({ connect: async () => client } as unknown as pg.Pool);
+    return client;
+  }
+
+  it('listens for connection errors for the whole hold, and destroys the client after one', async () => {
+    const client = fakeClient();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const boom = new Error('terminating connection due to administrator command');
+    const result = await withUserAdvisoryLock(7, async () => {
+      expect(client.listenerCount('error')).toBe(1);
+      // Without a listener EventEmitter throws on 'error' — this would crash the process.
+      client.emit('error', boom);
+      return 'done';
+    });
+    expect(result).toBe('done');
+    expect(client.listenerCount('error')).toBe(0);
+    // No unlock on a dead connection; the client is destroyed, not reused.
+    expect(client.query.mock.calls.some(([t]) => String(t).includes('pg_advisory_unlock'))).toBe(false);
+    expect(client.release).toHaveBeenCalledWith(boom);
+  });
+
+  it('destroys the client when unlock fails, so a still-held session lock is not returned to the pool', async () => {
+    const client = fakeClient({ unlockFails: true });
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await withUserAdvisoryLock(7, async () => 'ok');
+    expect(client.release).toHaveBeenCalledTimes(1);
+    const arg = client.release.mock.calls[0][0] as unknown;
+    expect(arg).toBeInstanceOf(Error);
+    expect(client.listenerCount('error')).toBe(0);
+  });
+
+  it('returns a healthy client to the pool after a clean unlock', async () => {
+    const client = fakeClient();
+    await withUserAdvisoryLock(7, async () => 'ok');
+    expect(client.release).toHaveBeenCalledWith(undefined);
+    expect(client.listenerCount('error')).toBe(0);
   });
 });

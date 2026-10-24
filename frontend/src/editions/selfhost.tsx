@@ -32,6 +32,8 @@ export const edition: FrontendEdition = {
   login: { OAuthButtons: null, BanNotice: null, EmailStageLinks: null, passkey: null },
   // The account (e-mail, password) comes from the compose configuration.
   ProfileTab: null,
+  settingsTabs: [],
+  LockedBannerAction: null,
   ShellExtras: null,
   i18n: selfhostTranslations,
   init: () => {},

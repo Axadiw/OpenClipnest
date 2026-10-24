@@ -1,5 +1,5 @@
 import type { Request, Response, NextFunction } from 'express';
-import { getAccessTokenByHash, getTokenGeneration } from '../db/queries.js';
+import { getAccessTokenByHash, getTokenGeneration, isAccessLocked } from '../db/queries.js';
 import { hashToken } from '../oauth/accessToken.js';
 import { MCP_CONFIG } from '../config.js';
 
@@ -78,6 +78,13 @@ export async function bearerAuthMcp(req: Request, res: Response, next: NextFunct
   const currentGeneration = await getTokenGeneration(row.userId);
   if (currentGeneration > row.tokenGeneration) {
     fail(res, 'invalid_token', 'revoked');
+    return;
+  }
+
+  // Step 5c: a locked account keeps its token but may not use it. 403, not
+  // 401: a 401 would send the MCP client into a fresh authorization loop.
+  if (await isAccessLocked(row.userId)) {
+    res.status(403).json({ error: 'account_locked', error_description: 'Account locked' });
     return;
   }
 

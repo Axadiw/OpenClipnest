@@ -1,5 +1,5 @@
 // server/db/queries/users.ts
-import { eq, and, isNull, sql } from 'drizzle-orm';
+import { eq, and, isNull, sql, type SQL } from 'drizzle-orm';
 import { db, withTx } from '../index.js';
 import { users, plans, passkeyBackupCodes } from '../schema/index.js';
 import type { User } from '../../types.js';
@@ -83,6 +83,8 @@ export async function getUserByUuid(
       diskUsageBytes: users.diskUsageBytes,
       transferUsageBytes: users.transferUsageBytes,
       deletionStatus: users.deletionStatus,
+      planSource: users.planSource,
+      planExpiresAt: users.planExpiresAt,
       planName: plans.name,
     })
     .from(users)
@@ -107,6 +109,8 @@ export async function getUserByUuid(
     diskUsageBytes: Number(row.diskUsageBytes),
     transferUsageBytes: Number(row.transferUsageBytes),
     deletionStatus: (row.deletionStatus ?? 'active') as User['deletionStatus'],
+    planSource: row.planSource as User['planSource'],
+    planExpiresAt: row.planExpiresAt instanceof Date ? row.planExpiresAt.toISOString() : null,
   };
 }
 
@@ -135,6 +139,8 @@ export async function getUserByEmail(
       diskUsageBytes: users.diskUsageBytes,
       transferUsageBytes: users.transferUsageBytes,
       deletionStatus: users.deletionStatus,
+      planSource: users.planSource,
+      planExpiresAt: users.planExpiresAt,
       planName: plans.name,
     })
     .from(users)
@@ -159,6 +165,8 @@ export async function getUserByEmail(
     diskUsageBytes: Number(row.diskUsageBytes),
     transferUsageBytes: Number(row.transferUsageBytes),
     deletionStatus: (row.deletionStatus ?? 'active') as User['deletionStatus'],
+    planSource: row.planSource as User['planSource'],
+    planExpiresAt: row.planExpiresAt instanceof Date ? row.planExpiresAt.toISOString() : null,
   };
 }
 
@@ -188,6 +196,8 @@ export async function getUserByInternalId(
       diskUsageBytes: users.diskUsageBytes,
       transferUsageBytes: users.transferUsageBytes,
       deletionStatus: users.deletionStatus,
+      planSource: users.planSource,
+      planExpiresAt: users.planExpiresAt,
       planName: plans.name,
     })
     .from(users)
@@ -212,6 +222,8 @@ export async function getUserByInternalId(
     diskUsageBytes: Number(row.diskUsageBytes),
     transferUsageBytes: Number(row.transferUsageBytes),
     deletionStatus: (row.deletionStatus ?? 'active') as User['deletionStatus'],
+    planSource: row.planSource as User['planSource'],
+    planExpiresAt: row.planExpiresAt instanceof Date ? row.planExpiresAt.toISOString() : null,
   };
 }
 
@@ -236,8 +248,16 @@ function rowTsToIso(v: Date | string | null): string | null {
  * getAllUsers: LATERAL subquery for active ban count — stays on raw sql tag.
  * Drizzle has no LATERAL join support; this query cannot be expressed in the
  * builder without raw SQL anyway.
+ *
+ * `planLockStands` (written against the alias `u`) is the edition's rule for
+ * "the plan rules lock this account". An account the administrator locked may
+ * still carry a copy of that lock in access_locked_at; it is reported as
+ * plan-locked only when the rule says the plan lock really stands, so the list
+ * does not show two locks where there is one. Default: no such rule, so an
+ * administrator's lock is never also reported as a plan lock.
  */
-export async function getAllUsers(): Promise<User[]> {
+export async function getAllUsers(opts: { planLockStands?: SQL } = {}): Promise<User[]> {
+  const planLockStands = opts.planLockStands ?? sql`FALSE`;
   const result = await db.execute<{
     uuid: string;
     email: string;
@@ -254,10 +274,20 @@ export async function getAllUsers(): Promise<User[]> {
     ban_expires_at: string | null;
     ban_reason: string | null;
     active_bans: number;
+    access_locked: boolean;
+    admin_locked: boolean;
+    plan_locked: boolean;
+    plan_override_at: Date | string | null;
+    plan_source: string;
+    plan_expires_at: Date | string | null;
   }>(sql`
     SELECT u.uuid, u.email, u.email_verified, u.is_admin, u.active, u.created_at, u.plan_id,
            u.disk_usage_bytes, u.transfer_usage_bytes,
-           u.deletion_status,
+           u.deletion_status, u.plan_source, u.plan_expires_at,
+           (u.access_locked_at IS NOT NULL OR u.admin_locked_at IS NOT NULL) AS access_locked,
+           (u.admin_locked_at IS NOT NULL) AS admin_locked,
+           (u.access_locked_at IS NOT NULL AND (u.admin_locked_at IS NULL OR ${planLockStands})) AS plan_locked,
+           u.plan_override_at,
            p.name as plan_name,
            b.expires_at AS ban_expires_at, b.reason AS ban_reason,
            COALESCE(cnt.active_bans, 0) AS active_bans
@@ -294,6 +324,12 @@ export async function getAllUsers(): Promise<User[]> {
     bannedReason: r.ban_reason ?? null,
     activeBanCount: Number(r.active_bans ?? 0),
     deletionStatus: (r.deletion_status ?? 'active') as User['deletionStatus'],
+    accessLocked: r.access_locked === true,
+    adminLocked: r.admin_locked === true,
+    planLocked: r.plan_locked === true,
+    planOverrideAt: rowTsToIso(r.plan_override_at),
+    planSource: r.plan_source as User['planSource'],
+    planExpiresAt: rowTsToIso(r.plan_expires_at),
   }));
 }
 

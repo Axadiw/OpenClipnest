@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { verifyToken } from '../services/auth.js';
 import { getTokenGeneration } from '../db/queries/users.js';
 import { isMcpFamilyActive } from '../db/queries/oauth.js';
+import { getSessionAuthState } from '../db/queries/sessions.js';
 
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
   const token = extractToken(req);
@@ -16,6 +17,21 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
     // to refresh itself just because it was presented here.
     if (payload.kind === 'refresh') {
       res.status(401).json({ error: 'Wrong token kind' });
+      return;
+    }
+    // A token bound to a device session also needs that session to stand: a
+    // sign-out on this device ends it at once, not when the access token expires.
+    if (payload.tokenGen != null && !payload.mediaEventId && payload.sid) {
+      getSessionAuthState(payload.userId, payload.sid).then(state => {
+        if (state.tokenGeneration !== payload.tokenGen || !state.sessionActive) {
+          res.status(401).json({ error: 'Token revoked' });
+          return;
+        }
+        req.user = payload;
+        next();
+      }).catch(() => {
+        res.status(401).json({ error: 'Authentication error' });
+      });
       return;
     }
     // Verify token generation (skip for media tokens which inherit the gen from session token)

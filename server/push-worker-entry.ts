@@ -20,7 +20,6 @@
 // iOS Notification Service Extension can download + attach the image without
 // the user's session token. See buildPushForJob() for the exact payload.
 
-import './sentry.js';
 import { initDb } from './db/index.js';
 import { edition } from './edition.js';
 import { installEdition } from './extensions.js';

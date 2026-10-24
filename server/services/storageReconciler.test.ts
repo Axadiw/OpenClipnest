@@ -20,6 +20,8 @@ const mockGetOrphansOlderThan = vi.fn();
 const mockDeleteOrphanObjectRow = vi.fn();
 const mockTrackFileUpload = vi.fn();
 const mockGetAllUserUuidsAnyStatus = vi.fn();
+const mockGetUserIdsWithUnfinishedContentDeletion = vi.fn();
+const mockHasUnfinishedContentDeletion = vi.fn(async (_id: number) => false);
 
 const mockGetFileMetadataKeysByOwner = vi.fn();
 const mockGetEventByIdAnyOwner = vi.fn();
@@ -40,6 +42,8 @@ vi.mock('../db/queries/storage.js', () => ({
   // so tests exercise the body unchanged; race-vs-autoDelete is covered by
   // production integration (no unit-test concurrency simulation).
   withUserAdvisoryLock: async <T,>(_userId: number, fn: () => Promise<T>): Promise<T | null> => fn(),
+  getUserIdsWithUnfinishedContentDeletion: (...a: unknown[]) => mockGetUserIdsWithUnfinishedContentDeletion(...a),
+  hasUnfinishedContentDeletion: (id: number) => mockHasUnfinishedContentDeletion(id),
 }));
 vi.mock('../db/queries/events.js', () => ({
   cleanupOldZombieEvents: (...a: unknown[]) => mockCleanupOldZombieEvents(...a),
@@ -122,6 +126,8 @@ beforeEach(() => {
   // Default: auto-purge enabled (production default). Individual tests flip it.
   mockConfig.orphanAutoPurgeEnabled = true;
   mockGetUsersForScan.mockResolvedValue([USER]);
+  mockGetUserIdsWithUnfinishedContentDeletion.mockResolvedValue(new Set());
+  mockHasUnfinishedContentDeletion.mockResolvedValue(false);
   mockGetAllUserUuids.mockResolvedValue(new Set([UUID]));
   // Purge GUARD set (every user regardless of admin / deletion status).
   // Default mirrors the single active test user; tests that exercise admin /
@@ -178,6 +184,47 @@ describe('storageReconciler — disk usage', () => {
     await runStorageReconciliation();
 
     expect(mockSetDiskUsageAbsolute).not.toHaveBeenCalled();
+  });
+});
+
+describe('storageReconciler — content deletion in progress', () => {
+  it('skips an account whose recordings are being deleted', async (ctx) => {
+    story(ctx, 'Konto w trakcie usuwania nagrań jest pomijane w kroku 1 — reconciler nie odtworzy wierszy plików ani licznika zajętości z obiektów, do których usuwanie jeszcze nie dotarło. Pozostałe konta są sprawdzane jak zwykle.');
+    const OTHER = { id: 8, uuid: '99999999-2222-3333-4444-555555555555', encryptionSalt: 'salt-8' };
+    mockGetUsersForScan.mockResolvedValue([USER, OTHER]);
+    mockGetUserIdsWithUnfinishedContentDeletion.mockResolvedValue(new Set([USER.id]));
+    mockListObjects.mockImplementation(async (bucket: string, prefix: string) =>
+      bucket === 'recordings' ? [{ key: `${prefix}2026/10/01/Front_00_X.mp4`, size: 50, lastModified: new Date('2026-10-01T00:00:00Z') }] : []);
+    mockGetUserQuota.mockResolvedValue({ diskUsageBytes: 0, diskLimitBytes: 0, transferUsageBytes: 0, transferLimitBytes: 0, transferResetAt: null });
+
+    await runStorageReconciliation();
+
+    const listedPrefixes = mockListObjects.mock.calls.map((c) => c[1]);
+    expect(listedPrefixes).not.toContain(`${UUID}/`);
+    expect(listedPrefixes).toContain(`${OTHER.uuid}/`);
+    expect(mockTrackFileUpload.mock.calls.some((c) => c.includes(USER.id))).toBe(false);
+    expect(mockSetDiskUsageAbsolute).not.toHaveBeenCalledWith(USER.id, expect.anything());
+    expect(mockSetDiskUsageAbsolute).toHaveBeenCalledWith(OTHER.id, 50);
+  });
+
+  it('skips an account whose deletion started after the run read its list', async (ctx) => {
+    story(ctx, 'Usuwanie nagrań i audyt zachodzą na siebie co rano: gdy usuwanie konta przekroczy punkt bez powrotu już po tym, jak audyt przeczytał swoją listę, audyt i tak to widzi — pyta jeszcze raz pod blokadą konta, tuż przed czytaniem jego obiektów — i nie odtwarza usuniętych nagrań.');
+    const OTHER = { id: 8, uuid: '99999999-2222-3333-4444-555555555555', encryptionSalt: 'salt-8' };
+    mockGetUsersForScan.mockResolvedValue([USER, OTHER]);
+    mockGetUserIdsWithUnfinishedContentDeletion.mockResolvedValue(new Set()); // read at the start: nothing yet
+    mockHasUnfinishedContentDeletion.mockImplementation(async (id: number) => id === USER.id); // started since
+    mockListObjects.mockImplementation(async (bucket: string, prefix: string) =>
+      bucket === 'recordings' ? [{ key: `${prefix}2026/10/01/Front_00_X.mp4`, size: 50, lastModified: new Date('2026-10-01T00:00:00Z') }] : []);
+    mockGetUserQuota.mockResolvedValue({ diskUsageBytes: 0, diskLimitBytes: 0, transferUsageBytes: 0, transferLimitBytes: 0, transferResetAt: null });
+
+    await runStorageReconciliation();
+
+    expect(mockHasUnfinishedContentDeletion).toHaveBeenCalledWith(USER.id);
+    const listedPrefixes = mockListObjects.mock.calls.map((c) => c[1]);
+    expect(listedPrefixes).not.toContain(`${UUID}/`);
+    expect(listedPrefixes).toContain(`${OTHER.uuid}/`);
+    expect(mockTrackFileUpload.mock.calls.some((c) => c.includes(USER.id))).toBe(false);
+    expect(mockSetDiskUsageAbsolute).not.toHaveBeenCalledWith(USER.id, expect.anything());
   });
 });
 
@@ -885,6 +932,7 @@ describe('storageReconciler — step 1 time budget', () => {
       mockGetFileMetadataKeysByOwner.mockResolvedValue([]);
       mockSetDiskUsageAbsolute.mockResolvedValue(undefined);
       const order: string[] = [];
+      mockGetUserIdsWithUnfinishedContentDeletion.mockResolvedValue(new Set());
       mockGetUsersForScan.mockResolvedValue(manyUsers);
       mockGetAllUserUuids.mockResolvedValue(new Set(manyUsers.map((u) => u.uuid)));
       mockGetAllUserUuidsAnyStatus.mockResolvedValue(manyUsers.map((u) => u.uuid));

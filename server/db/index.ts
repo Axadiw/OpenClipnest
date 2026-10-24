@@ -5,7 +5,7 @@
  *   server/db.ts pool (max=20, connectionString from CONFIG.databaseUrl),
  *   so there's only ever one pool per module — until Task 22 both pools
  *   coexist; mismatched config would be a bug.
- * - withTx wraps a Drizzle transaction with Sentry timing (slow-tx breadcrumb
+ * - withTx wraps a Drizzle transaction with timing (slow-tx breadcrumb
  *   mirrors the pattern used elsewhere in the codebase).
  * - withUserLock takes a (namespace, internalUserId) and serializes work on
  *   that user via pg_advisory_xact_lock inside a transaction.
@@ -18,7 +18,7 @@
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { sql } from 'drizzle-orm';
 import { Pool } from 'pg';
-import * as Sentry from '@sentry/node';
+import { addBreadcrumb, captureException } from '../errorReporting.js';
 import { CONFIG } from '../config.js';
 import * as schema from './schema/index.js';
 
@@ -37,7 +37,7 @@ export let pool = makePool();
 pool.on('error', (err) => {
   // Capture unexpected pool-level errors — same defensive pattern used
   // throughout the codebase for unexpected async errors.
-  Sentry.captureException(err);
+  captureException(err);
 });
 
 // -------- Drizzle instance --------
@@ -72,13 +72,16 @@ export type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 // LOCK_NS_QUOTA is independent — used by quotaTidy's withUserAdvisoryLock.
 export const LOCK_NS_EVENTS = 0x4556544en; // 'EVTN'
 export const LOCK_NS_QUOTA  = 0x51544459n; // 'QTDY'
+// LOCK_NS_SUBSCRIPTION serializes mirroring a user's payment subscriptions
+// (read from the provider + write) so the last write is the last read.
+export const LOCK_NS_SUBSCRIPTION = 0x53554253n; // 'SUBS'
 
 // -------- userLockKey — bit-identical to server/db.ts --------
 export function userLockKey(ns: bigint, userId: number): bigint {
   return (ns << 32n) | BigInt(userId);
 }
 
-// -------- withTx — Drizzle transaction with Sentry slow-tx breadcrumb --------
+// -------- withTx — Drizzle transaction with a slow-tx breadcrumb --------
 const SLOW_TX_MS = 1000; // log transactions that take longer than 1s
 
 export async function withTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
@@ -88,7 +91,7 @@ export async function withTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
   } finally {
     const elapsed = performance.now() - start;
     if (elapsed > SLOW_TX_MS) {
-      Sentry.addBreadcrumb({
+      addBreadcrumb({
         category: 'db.slow-tx',
         level: 'warning',
         data: { elapsed_ms: Math.round(elapsed) },
@@ -100,15 +103,53 @@ export async function withTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
 // -------- withUserLock — per-user transactional advisory lock --------
 // Acquires pg_advisory_xact_lock for (ns, userId) inside a transaction so
 // the lock auto-releases on COMMIT/ROLLBACK.
+//
+// `opts.lockTimeoutMs` caps the wait for the lock itself (SET LOCAL
+// lock_timeout, applied before acquiring); a busy lock then fails with
+// 55P03 instead of queueing indefinitely. It does NOT bound what the callback
+// does once the lock is held — a callback that waits on a remote call must
+// set its own deadline. (Deliberately no idle_in_transaction_session_timeout:
+// Postgres ends the session when it fires, and the error surfaces on a client
+// the pool no longer listens to — an unhandled 'error' event.)
+//
+// Defence in depth: for the life of the transaction a listener is attached to
+// the checked-out client (pg-pool drops its own on checkout), so a server-side
+// session end while the lock is held is logged and the in-flight query rejects
+// instead of an unhandled 'error' event taking the process down.
+export interface UserLockOptions {
+  lockTimeoutMs?: number;
+}
+
+type ErrorEmitter = { on(e: 'error', l: (err: Error) => void): unknown; removeListener(e: 'error', l: (err: Error) => void): unknown };
+
+/** The pg client behind a Drizzle transaction, when the driver exposes it. */
+function txClient(tx: Tx): ErrorEmitter | null {
+  const client = (tx as unknown as { session?: { client?: unknown } }).session?.client as Partial<ErrorEmitter> | undefined;
+  return client && typeof client.on === 'function' && typeof client.removeListener === 'function' ? client as ErrorEmitter : null;
+}
+
 export async function withUserLock<T>(
   ns: bigint,
   userId: number,
   fn: (tx: Tx) => Promise<T>,
+  opts: UserLockOptions = {},
 ): Promise<T> {
   return withTx(async (tx) => {
-    const key = userLockKey(ns, userId);
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(${key}::bigint)`);
-    return fn(tx);
+    const client = txClient(tx);
+    const onError = (err: Error) => {
+      console.error('[db] connection error while holding a user lock:', err.message);
+    };
+    client?.on('error', onError);
+    try {
+      if (opts.lockTimeoutMs !== undefined) {
+        await tx.execute(sql.raw(`SET LOCAL lock_timeout = ${Math.max(1, Math.floor(opts.lockTimeoutMs))}`));
+      }
+      const key = userLockKey(ns, userId);
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${key}::bigint)`);
+      return await fn(tx);
+    } finally {
+      client?.removeListener('error', onError);
+    }
   });
 }
 

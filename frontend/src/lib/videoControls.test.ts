@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatClock, clamp01, pointerFraction, bufferedEndFraction } from './videoControls';
+import { formatClock, clamp01, pointerFraction, bufferedSegments, mergeSegments } from './videoControls';
 
 describe('formatClock', () => {
   it('formats whole seconds as m:ss', () => {
@@ -52,26 +52,27 @@ describe('pointerFraction', () => {
   });
 });
 
-describe('bufferedEndFraction', () => {
-  const ranges = (...ends: number[]) => ({
-    length: ends.length,
-    start: () => 0,
-    end: (i: number) => ends[i],
+describe('bufferedSegments', () => {
+  const ranges = (...rs: [number, number][]) => ({
+    length: rs.length,
+    start: (i: number) => rs[i][0],
+    end: (i: number) => rs[i][1],
   }) as unknown as TimeRanges;
 
-  it('returns the furthest buffered end as a fraction of duration', () => {
-    expect(bufferedEndFraction(ranges(2, 5), 10)).toBe(0.5);
-    expect(bufferedEndFraction(ranges(10), 10)).toBe(1);
+  it('returns one segment per buffered range', () => {
+    expect(bufferedSegments(ranges([0, 2], [8, 10]), 10)).toEqual([{ start: 0, end: 0.2 }, { start: 0.8, end: 1 }]);
   });
-
-  it('clamps when the buffered end exceeds duration', () => {
-    expect(bufferedEndFraction(ranges(12), 10)).toBe(1);
+  it('clamps to [0,1] and drops empty ranges', () => {
+    expect(bufferedSegments(ranges([-1, 3], [5, 5], [9, 12]), 10)).toEqual([{ start: 0, end: 0.3 }, { start: 0.9, end: 1 }]);
   });
-
-  it('returns 0 when there are no ranges or duration is invalid', () => {
-    expect(bufferedEndFraction(ranges(), 10)).toBe(0);
-    expect(bufferedEndFraction(null, 10)).toBe(0);
-    expect(bufferedEndFraction(ranges(5), 0)).toBe(0);
-    expect(bufferedEndFraction(ranges(5), NaN)).toBe(0);
+  it('returns [] for no ranges, null, or unusable duration', () => {
+    expect(bufferedSegments(ranges(), 10)).toEqual([]);
+    expect(bufferedSegments(null, 10)).toEqual([]);
+    expect(bufferedSegments(ranges([0, 5]), 0)).toEqual([]);
+    expect(bufferedSegments(ranges([0, 5]), NaN)).toEqual([]);
+  });
+  it('mergeSegments unions overlapping and touching segments in order', () => {
+    expect(mergeSegments([{ start: 0.5, end: 0.7 }, { start: 0, end: 0.2 }, { start: 0.2, end: 0.3 }, { start: 0.6, end: 0.9 }]))
+      .toEqual([{ start: 0, end: 0.3 }, { start: 0.5, end: 0.9 }]);
   });
 });

@@ -1,16 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import express from 'express';
-import pg, { Pool } from 'pg';
+import pg from 'pg';
 import { randomUUID } from 'crypto';
 import { __setPoolForTest } from '../db/index.js';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { dirname } from 'node:path';
-import { migrateToSchema } from '../testing/migrate-schema.js';
+import { createScratchDb, type ScratchDb } from '../testing/scratch-db.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const MIGRATIONS_DIR = join(__dirname, '..', 'db', 'migrations');
 
 const TEST_URL = process.env.MIGRATE_TEST_DATABASE_URL ?? process.env.DATABASE_URL;
 const describeIfDb = TEST_URL ? describe : describe.skip;
@@ -26,20 +21,18 @@ vi.mock('../config.js', async () => {
 const fetchMock = vi.fn();
 vi.stubGlobal('fetch', fetchMock);
 
-const SCRATCH_SCHEMA = `test_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 describeIfDb('API broker /api/v0/oauth/consent/:txn', () => {
   let pool: pg.Pool;
+  let scratch: ScratchDb | undefined;
   let app: express.Express;
   let userId: number;
   let clientId: string;
   let txnId: string;
 
   beforeAll(async () => {
-    // options sets search_path at connection startup — no connect-event handler needed.
-    pool = new Pool({ connectionString: TEST_URL, max: 5, options: `-c search_path="${SCRATCH_SCHEMA}",public` });
-    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${SCRATCH_SCHEMA}"`);
-    await migrateToSchema(pool, SCRATCH_SCHEMA, MIGRATIONS_DIR);
+    scratch = await createScratchDb({ max: 5 });
+    pool = scratch.pool;
     __setPoolForTest(pool);
 
     await pool.query(
@@ -72,14 +65,7 @@ describeIfDb('API broker /api/v0/oauth/consent/:txn', () => {
     app.use('/api/v0/oauth/consent', oauthConsentRouter);
   }, 60_000);
   afterAll(async () => {
-    if (pool) {
-      await pool.end();
-    }
-    // Cleanup via a separate one-shot connection (pool's connect handler
-    // would still try to SET search_path to a dropped schema otherwise).
-    const cleanup = new Pool({ connectionString: TEST_URL, max: 1 });
-    await cleanup.query(`DROP SCHEMA IF EXISTS "${SCRATCH_SCHEMA}" CASCADE`);
-    await cleanup.end();
+    await scratch?.drop();
   });
   beforeEach(() => { fetchMock.mockReset(); });
 

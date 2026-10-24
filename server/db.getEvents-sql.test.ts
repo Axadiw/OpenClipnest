@@ -21,19 +21,13 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { Pool } from 'pg';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { dirname } from 'node:path';
 import { getEvents } from './db/queries/events.js';
 import { __setPoolForTest } from './db/index.js';
-import { migrateToSchema } from './testing/migrate-schema.js';
+import { createScratchDb, type ScratchDb } from './testing/scratch-db.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const TEST_DB_URL = process.env.DATABASE_URL_TEST ?? process.env.DATABASE_URL;
-const MIGRATIONS_DIR = join(__dirname, 'db', 'migrations');
 
-const SCRATCH_SCHEMA = `test_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 /** Insert an event row plus a default view file (so it passes the EXISTS filter). */
 async function insertEvent(
@@ -73,13 +67,12 @@ async function insertEvent(
 
 describe.skipIf(!TEST_DB_URL)('getEvents behavioural', () => {
   let pool: Pool;
+  let scratch: ScratchDb | undefined;
   let ownerId: number;
 
   beforeAll(async () => {
-    // options sets search_path at connection startup — no connect-event handler needed.
-    pool = new Pool({ connectionString: TEST_DB_URL, max: 5, options: `-c search_path="${SCRATCH_SCHEMA}",public` });
-    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${SCRATCH_SCHEMA}"`);
-    await migrateToSchema(pool, SCRATCH_SCHEMA, MIGRATIONS_DIR);
+    scratch = await createScratchDb({ max: 5 });
+    pool = scratch.pool;
 
     // Insert a plan + user required by FK constraints
     await pool.query(`INSERT INTO plans (id, name, disk_space_bytes, monthly_transfer_bytes) VALUES (1, 'free', 1000000, 1000000) ON CONFLICT DO NOTHING`);
@@ -94,13 +87,7 @@ describe.skipIf(!TEST_DB_URL)('getEvents behavioural', () => {
   });
 
   afterAll(async () => {
-    if (!pool) return; // skipped when TEST_DB_URL is not set
-    await pool.end();
-    // Cleanup via a separate one-shot connection (pool's connect handler
-    // would still try to SET search_path to a dropped schema otherwise).
-    const cleanup = new Pool({ connectionString: TEST_DB_URL, max: 1 });
-    await cleanup.query(`DROP SCHEMA IF EXISTS "${SCRATCH_SCHEMA}" CASCADE`);
-    await cleanup.end();
+    await scratch?.drop();
   });
 
   beforeEach(async () => {

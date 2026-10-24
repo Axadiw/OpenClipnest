@@ -45,7 +45,7 @@ describe('self-hosted edition', () => {
     const res = await request(app).get('/api/v0/config');
     expect(res.status).toBe(200);
     expect(res.body.edition).toBe('selfhost');
-    expect(res.body.features).toMatchObject({ registration: false, passkeys: false, oauthGoogle: false, oauthApple: false, mcp: true });
+    expect(res.body.features).toMatchObject({ registration: false, passkeys: false, oauthGoogle: false, oauthApple: false, mcp: true, paidPlans: false });
   });
 
   it('answers the apps\' sign-in pre-flight with password mode', async () => {

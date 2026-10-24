@@ -28,7 +28,7 @@ vi.mock('../utils/redis.js', () => ({
   }),
 }));
 
-import { setS3Client, putObject, getObject, headObject, deleteObject, listObjects, listEventFiles, deleteObjectsByPrefix } from './s3.js';
+import { setS3Client, putObject, getObject, headObject, deleteObject, listObjects, listEventFiles, deleteObjectsByPrefix, UnsafePrefixError } from './s3.js';
 
 const testSalt = crypto.randomBytes(32).toString('base64url');
 
@@ -243,6 +243,98 @@ describe('deleteObjectsByPrefix', () => {
     const removed = await deleteObjectsByPrefix('recordings', 'gone/');
     expect(removed).toBe(0);
     expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('deleteObjectsByPrefix with modifiedBefore', () => {
+  const modifiedBefore = new Date('2026-10-20T06:00:00Z');
+
+  it('deletes only objects older than the cutoff', async (ctx) => {
+    story(ctx, 'Usuwanie nagrań po końcu płatnego dostępu kasuje tylko to, co było w buckecie przed punktem bez powrotu — plik wgrany po opłaceniu w trakcie usuwania zostaje.');
+    const mockSend = vi.fn()
+      .mockResolvedValueOnce({
+        Contents: [
+          { Key: 'u1/2026/10/01/a.mp4', LastModified: new Date('2026-10-01T00:00:00Z') },
+          { Key: 'u1/2026/10/20/new.mp4', LastModified: new Date('2026-10-20T07:00:00Z') },
+          { Key: 'u1/no-date.mp4' },
+        ],
+        IsTruncated: false,
+      })
+      .mockResolvedValueOnce({ Errors: [] });
+    setS3Client(createMockClient(mockSend));
+    const r = await deleteObjectsByPrefix('recordings', 'u1/', { modifiedBefore });
+    // The object without a LastModified is left, and the prefix is not reported done (review M-2).
+    expect(r).toEqual({ deleted: 1, complete: false });
+    const del = mockSend.mock.calls[1][0];
+    expect(del.constructor.name).toBe('DeleteObjectsCommand');
+    expect(del.input.Delete.Objects).toEqual([{ Key: 'u1/2026/10/01/a.mp4' }]);
+  });
+
+  it('stops between pages when asked and says the prefix is not done', async (ctx) => {
+    story(ctx, 'Przy wyczerpanym budżecie czasu usuwanie kończy się między stronami listy i zgłasza „niedokończone” — następny przebieg dokończy.');
+    const mockSend = vi.fn()
+      .mockResolvedValueOnce({ Contents: [{ Key: 'u1/a.mp4', LastModified: new Date('2026-01-01T00:00:00Z') }], IsTruncated: true, NextContinuationToken: 't2' })
+      .mockResolvedValueOnce({ Errors: [] });
+    setS3Client(createMockClient(mockSend));
+    let pages = 0;
+    const r = await deleteObjectsByPrefix('recordings', 'u1/', { modifiedBefore, shouldStop: () => pages++ >= 1 });
+    expect(r).toEqual({ deleted: 1, complete: false });
+    expect(mockSend).toHaveBeenCalledTimes(2);
+  });
+
+  it.for(['', '/', 'u1', 'u1/2026/', '../u1/', 'u1//'])('refuses the prefix %j', async (prefix, ctx) => {
+    story(ctx, 'Prefiks, który nie jest dokładnie katalogiem jednego konta, jest odrzucany przed jakimkolwiek wywołaniem S3 — pomyłka nie może skasować bucketu ani cudzych nagrań.');
+    const mockSend = vi.fn();
+    setS3Client(createMockClient(mockSend));
+    await expect(deleteObjectsByPrefix('recordings', prefix, { modifiedBefore })).rejects.toBeInstanceOf(UnsafePrefixError);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('lists exactly the account prefix and filters every page by date', async (ctx) => {
+    story(ctx, 'Lista obiektów jest pobierana tylko spod katalogu konta, a filtr daty działa na każdej stronie listy — na drugiej stronie nowy plik też zostaje. Obiekt z czasem równym granicy zostaje (granica jest ostra).');
+    const mockSend = vi.fn()
+      .mockResolvedValueOnce({
+        Contents: [
+          { Key: 'u1/p1-old.mp4', LastModified: new Date('2026-10-01T00:00:00Z') },
+          { Key: 'u1/p1-edge.mp4', LastModified: modifiedBefore },
+        ],
+        IsTruncated: true, NextContinuationToken: 't2',
+      })
+      .mockResolvedValueOnce({ Errors: [] })
+      .mockResolvedValueOnce({
+        Contents: [
+          { Key: 'u1/p2-old.mp4', LastModified: new Date(modifiedBefore.getTime() - 1) },
+          { Key: 'u1/p2-new.mp4', LastModified: new Date('2026-10-20T07:00:00Z') },
+        ],
+        IsTruncated: false,
+      })
+      .mockResolvedValueOnce({ Errors: [] });
+    setS3Client(createMockClient(mockSend));
+    const r = await deleteObjectsByPrefix('recordings', 'u1/', { modifiedBefore });
+    expect(r).toEqual({ deleted: 2, complete: true });
+    const lists = mockSend.mock.calls.map((c) => c[0]).filter((c) => c.constructor.name === 'ListObjectsV2Command');
+    expect(lists.map((c) => [c.input.Prefix, c.input.ContinuationToken])).toEqual([['u1/', undefined], ['u1/', 't2']]);
+    const dels = mockSend.mock.calls.map((c) => c[0]).filter((c) => c.constructor.name === 'DeleteObjectsCommand');
+    expect(dels.map((c) => c.input.Delete.Objects)).toEqual([[{ Key: 'u1/p1-old.mp4' }], [{ Key: 'u1/p2-old.mp4' }]]);
+  });
+
+  it('a page with only new objects sends no delete and still finishes', async (ctx) => {
+    story(ctx, 'Strona listy bez niczego do usunięcia nie wysyła pustego DeleteObjects, a gdy wszystkie obiekty mają datę, prefiks jest zgłaszany jako zakończony.');
+    const mockSend = vi.fn().mockResolvedValueOnce({
+      Contents: [{ Key: 'u1/new.mp4', LastModified: new Date('2026-10-20T07:00:00Z') }], IsTruncated: false,
+    });
+    setS3Client(createMockClient(mockSend));
+    expect(await deleteObjectsByPrefix('recordings', 'u1/', { modifiedBefore })).toEqual({ deleted: 0, complete: true });
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws on per-key errors like the full-prefix delete', async (ctx) => {
+    story(ctx, 'Częściowo nieudane DeleteObjects kończy się wyjątkiem — przebieg nie oznaczy usunięcia jako zakończonego, gdy w buckecie zostały pliki.');
+    const mockSend = vi.fn()
+      .mockResolvedValueOnce({ Contents: [{ Key: 'u1/a.mp4', LastModified: new Date('2026-01-01T00:00:00Z') }], IsTruncated: false })
+      .mockResolvedValueOnce({ Errors: [{ Key: 'u1/a.mp4', Code: 'InternalError', Message: 'busy' }] });
+    setS3Client(createMockClient(mockSend));
+    await expect(deleteObjectsByPrefix('recordings', 'u1/', { modifiedBefore })).rejects.toThrow(/1\/1 keys failed/);
   });
 });
 

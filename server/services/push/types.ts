@@ -18,6 +18,7 @@
 //   - CATEGORY_RECORDING ('recording'): new_recording → [Play, Mute…]
 //   - CATEGORY_MUTABLE   ('mutable'):    every other suppressible kind → [Mute…]
 //   - user_banned: no category — it can't be muted (account suspension).
+//   - content_deletion_scheduled, content_deleted: no category either — notices about the account's own data.
 export const CATEGORY_RECORDING = 'recording';
 export const CATEGORY_MUTABLE = 'mutable';
 
@@ -26,9 +27,12 @@ export const CATEGORY_MUTABLE = 'mutable';
  * undefined when the kind carries no actions. Exported so both the worker and
  * tests share one source of truth; the iOS side mirrors these identifiers.
  */
+// Account notices: always shown without a Mute… button, like the suspension notice.
+const ACCOUNT_NOTICES = new Set(['user_banned', 'content_deletion_scheduled', 'content_deleted']);
+
 export function categoryForKind(kind: string): string | undefined {
   if (kind === 'new_recording') return CATEGORY_RECORDING;
-  if (kind === 'user_banned') return undefined; // not suppressible — no Mute…
+  if (ACCOUNT_NOTICES.has(kind)) return undefined; // not suppressible — no Mute…
   return CATEGORY_MUTABLE;
 }
 

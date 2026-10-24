@@ -20,7 +20,16 @@ const {
   mockValidatePasswordStrength,
   mockBumpTokenGeneration,
   mockForgotPasswordRateLimit,
+  mockCreateSession,
+  mockTouchSession,
+  mockRevokeSession,
+  authUser,
 } = vi.hoisted(() => ({
+  mockCreateSession: vi.fn(),
+  mockTouchSession: vi.fn(),
+  mockRevokeSession: vi.fn(),
+  // What the requireAuth mock puts on req.user; tests set `sid` on it.
+  authUser: { current: {} as Record<string, unknown> },
   mockGetUserByEmail: vi.fn(),
   mockGetUserByInternalId: vi.fn(),
   mockIsUserLocked: vi.fn(),
@@ -61,6 +70,12 @@ vi.mock('../db/queries/users.js', () => ({
   getFtpsState: vi.fn(async () => ({ passkeyEnabled: false, hasFtpsPassword: false, ftpsPasswordHash: null })),
 }));
 
+vi.mock('../db/queries/sessions.js', () => ({
+  createSession: (...a: unknown[]) => mockCreateSession(...a),
+  touchSession: (...a: unknown[]) => mockTouchSession(...a),
+  revokeSession: (...a: unknown[]) => mockRevokeSession(...a),
+}));
+
 vi.mock('../db/queries/lockout.js', () => ({
   isUserLocked: (...a: unknown[]) => mockIsUserLocked(...a),
   isUserBanned: (...a: unknown[]) => mockIsUserBanned(...a),
@@ -99,7 +114,7 @@ vi.mock('../utils/redis.js', () => ({
 
 vi.mock('../middleware/auth.js', () => ({
   requireAuth: (req: express.Request, _res: express.Response, next: express.NextFunction) => {
-    req.user = { userId: 1, userUuid: 'u-1', email: 'alice@test.com', isAdmin: false };
+    req.user = { userId: 1, userUuid: 'u-1', email: 'alice@test.com', isAdmin: false, ...authUser.current };
     next();
   },
 }));
@@ -123,6 +138,8 @@ describe('auth router', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockValidatePasswordStrength.mockReturnValue(null);
+    mockCreateSession.mockResolvedValue('sid-new');
+    authUser.current = {};
     app = createApp();
   });
 
@@ -149,8 +166,10 @@ describe('auth router', () => {
       expect(res.body.refreshToken).toBe('refresh-jwt');
       expect(res.body.user).toEqual({ id: 'uuid-1', email: 'alice@test.com', isAdmin: false, active: true });
       expect(mockGenerateAccessToken).toHaveBeenCalledWith(expect.objectContaining({
-        userId: 42, userUuid: 'uuid-1', tokenGen: 3,
+        userId: 42, userUuid: 'uuid-1', tokenGen: 3, sid: 'sid-new',
       }));
+      // Each sign-in opens its own device session.
+      expect(mockCreateSession).toHaveBeenCalledWith(42);
       expect(mockGenerateRefreshToken).toHaveBeenCalledWith(expect.objectContaining({
         userId: 42, tokenGen: 3,
       }));
@@ -217,6 +236,71 @@ describe('auth router', () => {
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ token: 'new-access', refreshToken: 'new-refresh' });
+    });
+
+    it('keeps the device session across a refresh', async (ctx) => {
+      story(ctx, 'Refresh zostaje w tej samej sesji urządzenia — dzięki temu wylogowanie na tym urządzeniu później kończy właśnie ją, a nie sesje na innych urządzeniach.');
+      mockVerifyToken.mockReturnValue({
+        userId: 42, userUuid: 'uuid-1', email: 'alice@test.com', isAdmin: false,
+        tokenGen: 5, sid: 'sid-phone', kind: 'refresh',
+      });
+      mockGetUserByInternalId.mockResolvedValue({
+        id: 'uuid-1', internalId: 42, email: 'alice@test.com', isAdmin: false, active: true,
+      });
+      mockIsUserBanned.mockResolvedValue({ banned: false });
+      mockGetTokenGeneration.mockResolvedValue(5);
+      mockTouchSession.mockResolvedValue(true);
+      mockGenerateAccessToken.mockReturnValue('new-access');
+      mockGenerateRefreshToken.mockReturnValue('new-refresh');
+
+      const res = await request(app).post('/api/v0/auth/refresh').send({ refreshToken: 'jwt' });
+
+      expect(res.status).toBe(200);
+      expect(mockTouchSession).toHaveBeenCalledWith('sid-phone', 42);
+      expect(mockCreateSession).not.toHaveBeenCalled();
+      expect(mockGenerateRefreshToken).toHaveBeenCalledWith(expect.objectContaining({ sid: 'sid-phone' }));
+    });
+
+    it('refuses a refresh token whose device session was signed out', async (ctx) => {
+      story(ctx, 'Po wylogowaniu na urządzeniu jego refresh token przestaje działać — ktoś, kto go wcześniej skopiował, nie odnowi już tej sesji.');
+      mockVerifyToken.mockReturnValue({
+        userId: 42, userUuid: 'uuid-1', email: 'alice@test.com', isAdmin: false,
+        tokenGen: 5, sid: 'sid-gone', kind: 'refresh',
+      });
+      mockGetUserByInternalId.mockResolvedValue({
+        id: 'uuid-1', internalId: 42, email: 'alice@test.com', isAdmin: false, active: true,
+      });
+      mockIsUserBanned.mockResolvedValue({ banned: false });
+      mockGetTokenGeneration.mockResolvedValue(5);
+      mockTouchSession.mockResolvedValue(false);
+
+      const res = await request(app).post('/api/v0/auth/refresh').send({ refreshToken: 'jwt' });
+
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe('Refresh token revoked');
+      expect(mockGenerateAccessToken).not.toHaveBeenCalled();
+    });
+
+    it('opens a session for a refresh token issued before device sessions existed', async (ctx) => {
+      story(ctx, 'Stary refresh token bez sesji urządzenia dostaje ją przy najbliższym odświeżeniu — po wdrożeniu nikt nie jest wylogowywany, a od tej chwili jego urządzenie da się wylogować osobno.');
+      mockVerifyToken.mockReturnValue({
+        userId: 42, userUuid: 'uuid-1', email: 'alice@test.com', isAdmin: false,
+        tokenGen: 5, kind: 'refresh',
+      });
+      mockGetUserByInternalId.mockResolvedValue({
+        id: 'uuid-1', internalId: 42, email: 'alice@test.com', isAdmin: false, active: true,
+      });
+      mockIsUserBanned.mockResolvedValue({ banned: false });
+      mockGetTokenGeneration.mockResolvedValue(5);
+      mockGenerateAccessToken.mockReturnValue('new-access');
+      mockGenerateRefreshToken.mockReturnValue('new-refresh');
+
+      const res = await request(app).post('/api/v0/auth/refresh').send({ refreshToken: 'jwt' });
+
+      expect(res.status).toBe(200);
+      expect(mockCreateSession).toHaveBeenCalledWith(42);
+      expect(mockTouchSession).not.toHaveBeenCalled();
+      expect(mockGenerateRefreshToken).toHaveBeenCalledWith(expect.objectContaining({ sid: 'sid-new' }));
     });
 
     it('rejects missing refresh token with 400', async (ctx) => {
@@ -315,6 +399,50 @@ describe('auth router', () => {
       // userId 1 comes from the requireAuth mock — proves the route is gated by auth
       // and revokes the *current* user's sessions.
       expect(mockBumpTokenGeneration).toHaveBeenCalledWith(1);
+      expect(res.body.scope).toBe('all');
+    });
+
+    it('scope "device" ends only this device\'s session', async (ctx) => {
+      story(ctx, 'Wylogowanie na jednym urządzeniu kończy tylko jego sesję — telefon, telewizor i drugi komputer zostają zalogowane.');
+      authUser.current = { sid: 'sid-laptop', tokenGen: 2 };
+      mockRevokeSession.mockResolvedValue(true);
+
+      const res = await request(app).post('/api/v0/auth/logout').send({ scope: 'device' });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ success: true, scope: 'device' });
+      expect(mockRevokeSession).toHaveBeenCalledWith('sid-laptop', 1);
+      expect(mockBumpTokenGeneration).not.toHaveBeenCalled();
+    });
+
+    it('scope "all" ends every session even from a device-bound token', async (ctx) => {
+      story(ctx, '„Wyloguj ze wszystkich urządzeń” dalej kończy każdą sesję naraz — także dla kont bez hasła, które nie mają innej drogi.');
+      authUser.current = { sid: 'sid-laptop', tokenGen: 2 };
+      mockBumpTokenGeneration.mockResolvedValue(true);
+
+      const res = await request(app).post('/api/v0/auth/logout').send({ scope: 'all' });
+
+      expect(res.body.scope).toBe('all');
+      expect(mockBumpTokenGeneration).toHaveBeenCalledWith(1);
+      expect(mockRevokeSession).not.toHaveBeenCalled();
+    });
+
+    it('scope "device" on a token without a session ends every session', async (ctx) => {
+      story(ctx, 'Token sprzed sesji urządzeń nie wskazuje, którą sesję zamknąć — wylogowanie i tak musi ją zakończyć, więc kończy wszystkie i mówi o tym w odpowiedzi.');
+      mockBumpTokenGeneration.mockResolvedValue(true);
+
+      const res = await request(app).post('/api/v0/auth/logout').send({ scope: 'device' });
+
+      expect(res.body.scope).toBe('all');
+      expect(mockBumpTokenGeneration).toHaveBeenCalledWith(1);
+    });
+
+    it('rejects an unknown scope', async (ctx) => {
+      story(ctx, 'Literówka w zakresie wylogowania daje 400 zamiast cichego wylogowania ze wszystkich urządzeń.');
+      const res = await request(app).post('/api/v0/auth/logout').send({ scope: 'everything' });
+      expect(res.status).toBe(400);
+      expect(mockBumpTokenGeneration).not.toHaveBeenCalled();
+      expect(mockRevokeSession).not.toHaveBeenCalled();
     });
   });
 });

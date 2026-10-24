@@ -1,25 +1,20 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import express from 'express';
-import pg, { Pool } from 'pg';
+import pg from 'pg';
 import { randomUUID } from 'crypto';
 import { __setPoolForTest } from '../db/index.js';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { dirname } from 'node:path';
 import { getRedis } from '../utils/redis.js';
-import { migrateToSchema } from '../testing/migrate-schema.js';
+import { createScratchDb, type ScratchDb } from '../testing/scratch-db.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const MIGRATIONS_DIR = join(__dirname, '..', 'db', 'migrations');
 
 const TEST_URL = process.env.MIGRATE_TEST_DATABASE_URL ?? process.env.DATABASE_URL;
 const describeIfDb = TEST_URL ? describe : describe.skip;
 
-const SCRATCH_SCHEMA = `test_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 describeIfDb('/api/v0/account/mcp-clients', () => {
   let pool: pg.Pool;
+  let scratch: ScratchDb | undefined;
   let app: express.Express;
   let userId: number;
   let otherUserId: number;
@@ -33,10 +28,8 @@ describeIfDb('/api/v0/account/mcp-clients', () => {
     // unnecessary AND blocked the CI test-server job for 30 s waiting on
     // Redis SCAN under load.
 
-    // options sets search_path at connection startup — no connect-event handler needed.
-    pool = new Pool({ connectionString: TEST_URL, max: 10, options: `-c search_path="${SCRATCH_SCHEMA}",public` });
-    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${SCRATCH_SCHEMA}"`);
-    await migrateToSchema(pool, SCRATCH_SCHEMA, MIGRATIONS_DIR);
+    scratch = await createScratchDb({ max: 10 });
+    pool = scratch.pool;
     __setPoolForTest(pool);
 
     await pool.query(
@@ -75,14 +68,7 @@ describeIfDb('/api/v0/account/mcp-clients', () => {
     app.use('/api/v0/account/mcp-clients', mcpClientsRouter);
   }, 60_000);
   afterAll(async () => {
-    if (pool) {
-      await pool.end();
-    }
-    // Cleanup via a separate one-shot connection (pool's connect handler
-    // would still try to SET search_path to a dropped schema otherwise).
-    const cleanup = new Pool({ connectionString: TEST_URL, max: 1 });
-    await cleanup.query(`DROP SCHEMA IF EXISTS "${SCRATCH_SCHEMA}" CASCADE`);
-    await cleanup.end();
+    await scratch?.drop();
   });
   beforeEach(async () => {
     await pool.query(`TRUNCATE oauth_clients RESTART IDENTITY CASCADE`);

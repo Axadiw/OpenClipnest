@@ -1,6 +1,11 @@
-import { useEffect, useRef, useState, useCallback, type RefObject } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback, type RefObject } from 'react';
 import { useTranslation } from '../i18n';
-import { formatClock, clamp01, pointerFraction, bufferedEndFraction } from '../lib/videoControls';
+import { formatClock, clamp01, pointerFraction, bufferedSegments, mergeSegments, type Segment } from '../lib/videoControls';
+import { useScrubPreview } from '../hooks/useScrubPreview';
+import { subscribeCachedRanges } from '../lib/scrubCache/client';
+import { cachedFractionSegments, usableCachedRanges } from '../lib/scrubPreview/cachedSegments';
+import { videoCacheKey } from '../sw/videoRequest';
+import { ScrubPreviewBubble } from './ScrubPreviewBubble';
 
 const SPEEDS = [0.5, 1, 1.5, 2];
 const LS_VOLUME = 'clipnest.player.volume';
@@ -41,7 +46,8 @@ export function VideoControls({ videoRef, containerRef, mediaKey, visible = true
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [buffered, setBuffered] = useState(0); // 0..1 fraction
+  const [buffered, setBuffered] = useState<Segment[]>([]);
+  const [cachedRanges, setCachedRanges] = useState<{ total: number; ranges: { start: number; end: number }[] }>({ total: 0, ranges: [] });
   const [volume, setVolume] = useState(1);
   const [muted, setMuted] = useState(false);
   const [rate, setRate] = useState(1);
@@ -54,6 +60,12 @@ export function VideoControls({ videoRef, containerRef, mediaKey, visible = true
   const seekRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
   const hideTimerRef = useRef<number | null>(null);
+  const preview = useScrubPreview(videoRef, mediaKey);
+  const { show: showPreview, hide: hidePreview } = preview;
+  /** Detaches the window listeners of a drag in progress (mouse live-seek or touch preview). */
+  const endDragRef = useRef<(() => void) | null>(null);
+  const touchDragRef = useRef(false);
+  const previewShownRef = useRef(false);
 
   // Sync local state from the media element + restore persisted audio prefs.
   // Re-runs when the element identity changes (mediaKey) so the Timeline
@@ -70,7 +82,7 @@ export function VideoControls({ videoRef, containerRef, mediaKey, visible = true
     const syncPlay = () => setPlaying(!v.paused);
     const syncTime = () => setCurrent(v.currentTime);
     const syncDuration = () => setDuration(Number.isFinite(v.duration) ? v.duration : 0);
-    const syncBuffered = () => setBuffered(bufferedEndFraction(v.buffered, v.duration));
+    const syncBuffered = () => setBuffered(bufferedSegments(v.buffered, v.duration));
     const syncVolume = () => { setVolume(v.volume); setMuted(v.muted); };
     const syncRate = () => setRate(v.playbackRate);
     const onWaiting = () => setBuffering(true);
@@ -117,6 +129,46 @@ export function VideoControls({ videoRef, containerRef, mediaKey, visible = true
     };
   }, [videoRef, mediaKey]);
 
+  // Ranges the service worker holds for this recording (also those only the hover preview
+  // fetched). The worker announces changes at most 4x a second and answers a query on subscribe,
+  // so a freshly mounted player already sees what an earlier page session cached.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    let unsubscribe: (() => void) | null = null;
+    let boundSrc = '';
+    const bind = () => {
+      const src = v.currentSrc || v.src;
+      // The token changes on refresh while the recording stays the same: keep the subscription.
+      const id = src ? videoCacheKey(src) ?? src.split('?')[0] : '';
+      if (!id || id === boundSrc) return;
+      boundSrc = id;
+      unsubscribe?.();
+      setCachedRanges({ total: 0, ranges: [] });
+      unsubscribe = subscribeCachedRanges(src, (r) => setCachedRanges({ total: r.total, ranges: r.ranges }));
+    };
+    bind();
+    v.addEventListener('loadstart', bind);
+    v.addEventListener('loadedmetadata', bind);
+    return () => {
+      v.removeEventListener('loadstart', bind);
+      v.removeEventListener('loadedmetadata', bind);
+      unsubscribe?.();
+    };
+  }, [videoRef, mediaKey]);
+
+  // The index walk depends only on the worker's ranges (announced at most 4x a second), not on
+  // the element's own `buffered`, which gets a new array on every timeupdate.
+  const cachedSegments = useMemo(
+    () => cachedFractionSegments(
+      preview.sampleIndex,
+      usableCachedRanges(cachedRanges.ranges, cachedRanges.total, preview.sampleTotal),
+      duration,
+    ),
+    [preview.sampleIndex, preview.sampleTotal, cachedRanges, duration],
+  );
+  const greySegments = useMemo(() => mergeSegments([...buffered, ...cachedSegments]), [buffered, cachedSegments]);
+
   // Track fullscreen state from the document (covers Esc / browser-driven exit).
   useEffect(() => {
     const onFsChange = () => setIsFullscreen(document.fullscreenElement === containerRef.current);
@@ -157,19 +209,94 @@ export function VideoControls({ videoRef, containerRef, mediaKey, visible = true
     seekTo(pointerFraction(clientX, track.getBoundingClientRect()));
   }, [seekTo]);
 
+  // Auto-hide the bar after inactivity while playing; always shown when paused. Never while the
+  // preview bubble is up or a finger is dragging the knob: the pointer rests exactly while the
+  // user reads the frame, and a hidden bar would leave the drag running invisibly.
+  const revealBar = useCallback(() => {
+    setBarShown(true);
+    if (hideTimerRef.current) { window.clearTimeout(hideTimerRef.current); hideTimerRef.current = null; }
+    if (previewShownRef.current || touchDragRef.current) return;
+    if (!videoRef.current?.paused) {
+      hideTimerRef.current = window.setTimeout(() => setBarShown(false), HIDE_DELAY_MS);
+    }
+  }, [videoRef]);
+
+  // Hold the bar while the bubble is shown; re-arm the auto-hide when it goes away.
+  const previewShown = preview.state !== 'hidden';
+  useEffect(() => {
+    const was = previewShownRef.current;
+    previewShownRef.current = previewShown;
+    if (previewShown || was) revealBar();
+  }, [previewShown, revealBar]);
+
+  const fractionAt = useCallback((clientX: number): number | null => {
+    const track = seekRef.current;
+    return track ? pointerFraction(clientX, track.getBoundingClientRect()) : null;
+  }, []);
+
+  // Mouse / pen: press seeks live and dragging keeps seeking (the preview bubble is for hovering).
+  // Touch: the finger has no hover, so pressing and dragging only moves the preview bubble and
+  // playback carries on; lifting the finger seeks there, and a cancelled gesture seeks nowhere.
   const onSeekPointerDown = useCallback((e: React.PointerEvent) => {
     e.preventDefault();
-    draggingRef.current = true;
-    seekFromClientX(e.clientX);
-    const move = (ev: PointerEvent) => { if (draggingRef.current) seekFromClientX(ev.clientX); };
-    const up = () => {
+    endDragRef.current?.();
+    const touch = e.pointerType === 'touch';
+    let last = fractionAt(e.clientX);
+    if (touch) {
+      touchDragRef.current = true;
+      revealBar();
+      if (last !== null) showPreview(last);
+    } else {
+      hidePreview();
+      draggingRef.current = true;
+      seekFromClientX(e.clientX);
+    }
+    const move = (ev: PointerEvent) => {
+      if (touch) {
+        const f = fractionAt(ev.clientX);
+        if (f !== null) { last = f; showPreview(f); }
+      } else if (draggingRef.current) {
+        seekFromClientX(ev.clientX);
+      }
+    };
+    const end = () => {
       draggingRef.current = false;
+      touchDragRef.current = false;
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', cancel);
+      if (endDragRef.current === end) endDragRef.current = null;
     };
+    const up = () => {
+      end();
+      if (touch) {
+        if (last !== null) seekTo(last);
+        hidePreview();
+        revealBar();
+      }
+    };
+    const cancel = () => {
+      end();
+      if (touch) { hidePreview(); revealBar(); }
+    };
+    endDragRef.current = end;
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
-  }, [seekFromClientX]);
+    window.addEventListener('pointercancel', cancel);
+  }, [fractionAt, seekFromClientX, seekTo, showPreview, hidePreview, revealBar]);
+
+  const onSeekPointerMove = useCallback((e: React.PointerEvent) => {
+    if (e.pointerType === 'touch' || e.buttons !== 0) return;
+    const f = fractionAt(e.clientX);
+    if (f !== null) showPreview(f);
+  }, [fractionAt, showPreview]);
+
+  const onSeekPointerLeave = useCallback((e: React.PointerEvent) => {
+    if (e.pointerType === 'touch') return; // a finger sliding off the bar keeps dragging
+    hidePreview();
+  }, [hidePreview]);
+
+  useEffect(() => () => endDragRef.current?.(), []);
 
   const onSeekKeyDown = useCallback((e: React.KeyboardEvent) => {
     const v = videoRef.current;
@@ -237,15 +364,6 @@ export function VideoControls({ videoRef, containerRef, mediaKey, visible = true
     return () => document.removeEventListener('keydown', onKey);
   }, [togglePlay, toggleFullscreen, toggleMute]);
 
-  // Auto-hide the bar after inactivity while playing; always shown when paused.
-  const revealBar = useCallback(() => {
-    setBarShown(true);
-    if (hideTimerRef.current) window.clearTimeout(hideTimerRef.current);
-    if (!videoRef.current?.paused) {
-      hideTimerRef.current = window.setTimeout(() => setBarShown(false), HIDE_DELAY_MS);
-    }
-  }, [videoRef]);
-
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -270,7 +388,6 @@ export function VideoControls({ videoRef, containerRef, mediaKey, visible = true
 
   const playedFrac = duration > 0 ? clamp01(current / duration) : 0;
   const playedPct = `${(playedFrac * 100).toFixed(2)}%`;
-  const bufferedPct = `${(buffered * 100).toFixed(2)}%`;
   const pipSupported = typeof document !== 'undefined' && (document as Document).pictureInPictureEnabled;
 
   return (
@@ -309,12 +426,22 @@ export function VideoControls({ videoRef, containerRef, mediaKey, visible = true
         aria-valuemax={Math.round(duration)}
         aria-valuenow={Math.round(current)}
         onPointerDown={onSeekPointerDown}
+        onPointerMove={onSeekPointerMove}
+        onPointerLeave={onSeekPointerLeave}
         onKeyDown={onSeekKeyDown}
       >
         <div className="video-controls-seek-track" />
-        <div className="video-controls-seek-buffered" style={{ width: bufferedPct }} />
+        {greySegments.map((seg, i) => (
+          <div
+            key={i}
+            className="video-controls-seek-buffered"
+            data-testid="player-seek-buffered"
+            style={{ left: `${(seg.start * 100).toFixed(2)}%`, width: `${((seg.end - seg.start) * 100).toFixed(2)}%` }}
+          />
+        ))}
         <div className="video-controls-seek-played" style={{ width: playedPct }} />
         <div className="video-controls-seek-thumb" style={{ left: playedPct }} />
+        <ScrubPreviewBubble state={preview.state} time={preview.time} fraction={preview.fraction} canvasRef={preview.canvasRef} />
       </div>
 
       <button

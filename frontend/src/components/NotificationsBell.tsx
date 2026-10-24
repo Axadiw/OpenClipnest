@@ -13,6 +13,9 @@ const KIND_ICON: Record<NotificationKind, string> = {
   user_banned: '🚫',
   auto_deleted_oldest: '🧹',
   duplicate_file: '🗂️',
+  plan_change_cancelled: '↩️',
+  content_deletion_scheduled: '⏳',
+  content_deleted: '🗑️',
 };
 
 interface NotificationGroup {
@@ -44,7 +47,7 @@ function groupByKind(items: Notification[]): NotificationGroup[] {
 }
 
 export function NotificationsBell() {
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
   const [, setSearchParams] = useSearchParams();
   const [open, setOpen] = useState(false);
   const [count, setCount] = useState(0);
@@ -153,6 +156,27 @@ export function NotificationsBell() {
   };
 
   const getDisplayMessage = (n: Notification): React.ReactNode => {
+    // Stored in English for push and older clients; shown here in the
+    // interface language from the plan name.
+    if (n.kind === 'plan_change_cancelled') {
+      const plan = (n.details as { plan?: unknown } | null)?.plan;
+      return typeof plan === 'string' && plan ? t('notifications.planChangeCancelled', { plan }) : n.message;
+    }
+    if (n.kind === 'content_deletion_scheduled') {
+      const d = n.details as { at?: unknown; final?: unknown } | null;
+      if (typeof d?.at !== 'string') return n.message;
+      // The deletion happens on a UTC day: name it in the interface language, as a UTC date.
+      const at = new Date(d.at);
+      if (Number.isNaN(at.getTime())) return n.message;
+      let date: string;
+      try {
+        date = at.toLocaleDateString(language, { timeZone: 'UTC', day: 'numeric', month: 'long', year: 'numeric' });
+      } catch {
+        return n.message;
+      }
+      return t(d.final === true ? 'notifications.contentDeletionTomorrow' : 'notifications.contentDeletionScheduled', { date });
+    }
+    if (n.kind === 'content_deleted') return t('notifications.contentDeleted');
     if (n.kind !== 'invalid_file') return n.message;
     const filename = getFilenameFromDetails(n);
     if (!filename) return n.message;
