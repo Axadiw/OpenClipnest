@@ -47,7 +47,7 @@ inherits = "release"
 strip = false
 debug = 1
 
-# Fork of libunftp 0.23.0 with two local patches:
+# Fork of libunftp 0.23.0 with three local patches:
 #   1. `datachan.rs` data-channel TLS accept panic (unwrap on UnexpectedEof)
 #      replaced by a graceful warn-and-drop — upstream bug tracked in
 #      bolcom/libunftp#375.
@@ -58,7 +58,12 @@ debug = 1
 #      the client's post-STOR close_notify+FIN and surfaces as spurious
 #      ECONNRESET + 451 "local error" on ~60 KiB+ uploads. Resumption on
 #      PASV/PORT gives no benefit anyway, each data session is one-shot.
+#   3. AUTH TLS queues the control-channel upgrade BEFORE the 234 reply and the
+#      control loop polls internal messages first. Without it, under load the
+#      client's ClientHello was read as a plaintext command and answered in
+#      clear text (curl: 'wrong version number'), ~1% of TLS logins at 100
+#      concurrent. Repro: ftps-server/scripts/auth-tls-hammer.py.
 # Commit is pinned by rev so `cargo update` won't silently move us.
 [patch.crates-io]
-libunftp = { git = "https://github.com/Axadiw/libunftp", rev = "92cc8c733fcc8e92ab1f48ecb380c24db8ecccff" }
-unftp-core = { git = "https://github.com/Axadiw/libunftp", rev = "92cc8c733fcc8e92ab1f48ecb380c24db8ecccff" }
+libunftp = { git = "https://github.com/Axadiw/libunftp", rev = "833cd3d7b5d5b515847245edd58a0cda8c8335dc" }
+unftp-core = { git = "https://github.com/Axadiw/libunftp", rev = "833cd3d7b5d5b515847245edd58a0cda8c8335dc" }

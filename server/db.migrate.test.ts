@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 import { story } from './testing/story.js';
-import { migrateToSchema, runMigrationFileInSchema } from './testing/migrate-schema.js';
+import { dropScratchSchema, resetScratchSchema, migrateToSchema, runMigrationFileInSchema } from './testing/migrate-schema.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -32,14 +32,13 @@ describe.skipIf(!TEST_DB_URL)('drizzle migrate', () => {
     // Cleanup via a separate one-shot connection (pool's connect handler
     // would still try to SET search_path to a dropped schema otherwise).
     const cleanup = new Pool({ connectionString: TEST_DB_URL, max: 1 });
-    await cleanup.query(`DROP SCHEMA IF EXISTS "${SCRATCH_SCHEMA}" CASCADE`);
+    await dropScratchSchema(cleanup, SCRATCH_SCHEMA);
     await cleanup.end();
   });
 
   beforeEach(async () => {
     // Wipe scratch schema for fresh state per test
-    await pool.query(`DROP SCHEMA IF EXISTS "${SCRATCH_SCHEMA}" CASCADE`);
-    await pool.query(`CREATE SCHEMA "${SCRATCH_SCHEMA}"`);
+    await resetScratchSchema(pool, SCRATCH_SCHEMA);
   });
 
   // 30s timeout: migrateToSchema applies all migration .sql files with

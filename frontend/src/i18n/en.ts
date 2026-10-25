@@ -18,6 +18,7 @@ export const en: Record<string, string> = {
   'login.backToEmail': 'Use a different email',
   'login.passkeyRequired': 'Use your passkey to sign in.',
   'login.verifiedFailure': 'Verification link is invalid or has expired.',
+  'login.emailNotVerified': 'Confirm your e-mail address — we sent you a link.',
   'login.pendingActivation': 'Your account is created and awaiting admin activation.',
   'tv.title': 'Connect your TV',
   'tv.subtitle': 'Enter the code shown on your Apple TV to sign it in.',

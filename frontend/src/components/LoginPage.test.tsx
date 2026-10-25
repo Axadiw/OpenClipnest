@@ -51,3 +51,36 @@ describe('LoginPage — after the e-mail confirmation link', () => {
     expect(screen.getByText('login.verifiedSuccess')).toBeInTheDocument();
   });
 });
+
+describe('LoginPage — an address that is not confirmed yet', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('asks to confirm the address instead of showing a generic error', async (ctx) => {
+    story(ctx, 'Gdy serwer odmawia logowania kodem 403 EMAIL_NOT_VERIFIED (poprawne hasło, niepotwierdzony adres), strona logowania pokazuje „Potwierdź adres e-mail — wysłaliśmy Ci link” zamiast „konto czeka na admina” czy ogólnego błędu.');
+    vi.spyOn(api, 'login').mockRejectedValue(new ApiError('Confirm your e-mail address first', 403, { code: 'EMAIL_NOT_VERIFIED' }));
+
+    renderWithRouter(<LoginPage />);
+    fireEvent.change(screen.getByPlaceholderText('login.email'), { target: { value: 'a@b.co' } });
+    await act(async () => { fireEvent.click(screen.getByText('login.continue')); });
+    fireEvent.change(screen.getByPlaceholderText('login.password'), { target: { value: 'hunter2' } });
+    await act(async () => { fireEvent.click(screen.getByText('login.submit')); });
+
+    expect(screen.getByTestId('login-email-not-verified')).toHaveTextContent('login.emailNotVerified');
+    expect(screen.queryByText('login.inactive')).toBeNull();
+    expect(screen.queryByText('login.error')).toBeNull();
+  });
+
+  it('keeps the activation copy for any other 403', async (ctx) => {
+    story(ctx, 'Inne 403 (bez kodu EMAIL_NOT_VERIFIED) nadal pokazują dotychczasowy komunikat o aktywacji.');
+    vi.spyOn(api, 'login').mockRejectedValue(new ApiError('Forbidden', 403, {}));
+
+    renderWithRouter(<LoginPage />);
+    fireEvent.change(screen.getByPlaceholderText('login.email'), { target: { value: 'a@b.co' } });
+    await act(async () => { fireEvent.click(screen.getByText('login.continue')); });
+    fireEvent.change(screen.getByPlaceholderText('login.password'), { target: { value: 'hunter2' } });
+    await act(async () => { fireEvent.click(screen.getByText('login.submit')); });
+
+    expect(screen.getByText('login.inactive')).toBeInTheDocument();
+    expect(screen.queryByTestId('login-email-not-verified')).toBeNull();
+  });
+});

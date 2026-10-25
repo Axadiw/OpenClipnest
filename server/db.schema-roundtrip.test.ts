@@ -20,7 +20,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { migrateToSchema } from './testing/migrate-schema.js';
+import { dropScratchSchema, migrateToSchema } from './testing/migrate-schema.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const TEST_DB_URL = process.env.DATABASE_URL_TEST ?? process.env.DATABASE_URL;
@@ -195,7 +195,7 @@ describe.skipIf(!TEST_DB_URL)('schema roundtrip', () => {
     // Cleanup via a separate one-shot connection (pool's connect handler
     // would still try to SET search_path to a dropped schema otherwise).
     const cleanup = new Pool({ connectionString: TEST_DB_URL, max: 1 });
-    await cleanup.query(`DROP SCHEMA IF EXISTS "${SCRATCH_SCHEMA}" CASCADE`);
+    await dropScratchSchema(cleanup, SCRATCH_SCHEMA);
     await cleanup.end();
   });
 

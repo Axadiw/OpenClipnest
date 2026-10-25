@@ -319,6 +319,12 @@ export async function indexFragmentedMp4(
     const moofHdr = readBoxHeader(buf, offsetInBuf);
     if (!moofHdr) break;
 
+    // A trailing fragment index (ffmpeg writes one, and so does a clip
+    // downloaded from us) ends the fragments: stop here and leave it out of the
+    // span, since the sidecar carries its own mfra. Only after a fragment —
+    // an mfra in place of the first one is still a broken file.
+    if (moofHdr.type === 'mfra' && fragments.length > 0) break;
+
     if (moofHdr.type !== 'moof') {
       throw new Error(
         `indexFragmentedMp4: expected moof at file offset ${cursorFileOffset}, got "${moofHdr.type}"`,

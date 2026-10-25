@@ -28,6 +28,8 @@ export interface LoginSlotCallbacks {
   onError: (message: string) => void;
   onRateLimit: (retryAfterSeconds: number) => void;
   onBan: (ban: { until: string | null; reason: string | null; indefinite: boolean }) => void;
+  /** The server refused the sign-in with 403 EMAIL_NOT_VERIFIED (the address must be confirmed first). */
+  onEmailNotVerified?: () => void;
 }
 
 export interface PasskeyLoginSlot {
@@ -75,6 +77,18 @@ export interface FrontendEdition {
     /** Links under the email form (register, forgot password, home). */
     EmailStageLinks: ComponentType | null;
     passkey: PasskeyLoginSlot | null;
+    /**
+     * Shown under "confirm your e-mail address" when a sign-in is refused
+     * with 403 EMAIL_NOT_VERIFIED (cloud: "Send the link again"). Absent ⇒
+     * the message alone.
+     */
+    EmailNotVerifiedAction?: ComponentType<{ email: string }> | null;
+    /**
+     * Where to go once signed in, read from the query the verification link
+     * redirects to (cloud: the plan a paid sign-up pays for next). Absent or
+     * null ⇒ the usual destination.
+     */
+    verifiedDestination?: (params: URLSearchParams) => { pathname: string; search: string } | null;
   };
   /**
    * The Settings → Profile tab (password, sign-in methods, account). null ⇒

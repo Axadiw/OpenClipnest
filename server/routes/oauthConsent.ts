@@ -1,6 +1,8 @@
 import { Router, type Request } from 'express';
 import { getConsentTxn } from '../db/queries/oauth.js';
 import { CONFIG } from '../config.js';
+import { getUserByInternalId } from '../db/queries/users.js';
+import { signInRefusal } from '../hooks.js';
 
 const router = Router();
 
@@ -30,6 +32,13 @@ router.post('/:txn', async (req: Request, res) => {
   const { decision, scopes } = (req.body ?? {}) as { decision?: string; scopes?: string[] };
   if (decision !== 'approve' && decision !== 'deny') {
     return res.status(400).json({ error: 'invalid_decision' });
+  }
+  // An MCP grant is a way in of its own: the edition's sign-in rule applies to
+  // approving one (a session that predates the rule must not mint a grant).
+  if (decision === 'approve') {
+    const owner = await getUserByInternalId(userId);
+    const refusal = owner ? signInRefusal(owner) : null;
+    if (refusal) return res.status(refusal.status).json(refusal.body);
   }
   const body = decision === 'approve'
     ? { txn: req.params.txn, userId, decision, grantedScopes: (scopes ?? []).join(' ') }

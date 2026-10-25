@@ -1778,7 +1778,7 @@ checksum = "48f5d2a454e16a5ea0f4ced81bd44e4cfc7bd3a507b61887c99fd3538b28e4af"
 [[package]]
 name = "libunftp"
 version = "0.23.0"
-source = "git+https://github.com/Axadiw/libunftp?rev=92cc8c733fcc8e92ab1f48ecb380c24db8ecccff#92cc8c733fcc8e92ab1f48ecb380c24db8ecccff"
+source = "git+https://github.com/Axadiw/libunftp?rev=833cd3d7b5d5b515847245edd58a0cda8c8335dc#833cd3d7b5d5b515847245edd58a0cda8c8335dc"
 dependencies = [
  "async-trait",
  "bitflags",
@@ -3104,7 +3104,7 @@ checksum = "562d481066bde0658276a35467c4af00bdc6ee726305698a55b86e61d7ad82bb"
 [[package]]
 name = "unftp-core"
 version = "0.1.0"
-source = "git+https://github.com/Axadiw/libunftp?rev=92cc8c733fcc8e92ab1f48ecb380c24db8ecccff#92cc8c733fcc8e92ab1f48ecb380c24db8ecccff"
+source = "git+https://github.com/Axadiw/libunftp?rev=833cd3d7b5d5b515847245edd58a0cda8c8335dc#833cd3d7b5d5b515847245edd58a0cda8c8335dc"
 dependencies = [
  "async-trait",
  "chrono",

@@ -5,6 +5,7 @@ import pg from 'pg';
 import { randomUUID } from 'crypto';
 import { __setPoolForTest } from '../db/index.js';
 import { createScratchDb, type ScratchDb } from '../testing/scratch-db.js';
+import { installEditionHooks } from '../hooks.js';
 
 
 const TEST_URL = process.env.MIGRATE_TEST_DATABASE_URL ?? process.env.DATABASE_URL;
@@ -141,5 +142,23 @@ describeIfDb('API broker /api/v0/oauth/consent/:txn', () => {
       .post(`/api/v0/oauth/consent/${txnId}`)
       .send({ decision: 'approve', scopes: ['videos:read'] });
     expect(res.status).toBe(502);
+  });
+
+  it("POST approve applies the edition's sign-in rule before any grant is minted", async () => {
+    installEditionHooks({
+      signInRefusal: (u) => (u.emailVerified === false ? { status: 403, body: { error: 'confirm', code: 'EMAIL_NOT_VERIFIED' } } : null),
+    });
+    await pool.query('UPDATE users SET email_verified = false WHERE id = $1', [userId]);
+    try {
+      const res = await request(app)
+        .post(`/api/v0/oauth/consent/${txnId}`)
+        .send({ decision: 'approve', scopes: ['videos:read'] });
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe('EMAIL_NOT_VERIFIED');
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      await pool.query('UPDATE users SET email_verified = true WHERE id = $1', [userId]);
+      installEditionHooks(undefined);
+    }
   });
 });

@@ -513,6 +513,12 @@ export function TimelineView({ cameraFilter, onPlay: _onPlay, allCameras }: Prop
   useEffect(() => {
     if (!initialHydrationDone.current) return;
     const handle = setTimeout(() => {
+      // The timer is cleared when this view unmounts, but a click on the Grid toggle
+      // navigates BEFORE React commits the unmount. A write landing in that gap would
+      // put ?event=&view= on the grid URL, which AuthedShell reads as "open the modal
+      // player" — the clip pops up over the view the user just switched to. Only the
+      // timeline route owns these params.
+      if (window.location.pathname !== '/timeline') return;
       const { event, view, t } = serializeInlineVideoToParams(inlineVideo);
       setSearchParams(() => {
         // Read live URL via window.location.search rather than React's

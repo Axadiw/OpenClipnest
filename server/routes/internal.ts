@@ -46,6 +46,7 @@ import {
 } from '../services/quota-reconciler.js';
 import type { NotificationKind } from '../types.js';
 import { isAccessLocked } from '../db/queries/access.js';
+import { signInRefusal } from '../hooks.js';
 import { verifyPassword, DUMMY_HASH } from '../services/auth.js';
 import {
   recordFtpsUploadAborted, recordFtpsUploadCompleted, uploadExtBucket, originFor,
@@ -168,6 +169,19 @@ router.post('/auth/verify', async (req, res) => {
     // the password so a wrong password never reveals the account state.
     if (await isAccessLocked(user.internalId)) {
       res.json({ valid: false, reason: 'access_locked' });
+      return;
+    }
+
+    // An account that may not sign in on the web may not use its cameras
+    // either: one an admin has not activated yet, or (Cloud) one whose address
+    // is not confirmed — a paid sign-up is unlocked by the payment before the
+    // owner clicks the link. Same order as above: only after the password.
+    if (user.active === false) {
+      res.json({ valid: false, reason: 'inactive' });
+      return;
+    }
+    if (signInRefusal(user)) {
+      res.json({ valid: false, reason: 'email_not_verified' });
       return;
     }
 

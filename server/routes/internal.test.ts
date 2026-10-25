@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { installEditionHooks } from '../hooks.js';
 import express from 'express';
 import request from 'supertest';
 import { story } from '../testing/story.js';
@@ -1162,6 +1163,50 @@ describe('Internal API routes', () => {
       expect(mockHeadObject).toHaveBeenCalledTimes(4);
       expect(mockDeleteObject).toHaveBeenCalledWith('clipnest-recordings', validBody.s3Key);
       expect(mockCompleteUpload).not.toHaveBeenCalled();
+    });
+  });
+
+  // ---------------------------------------------------------------
+  // An account that may not sign in on the web may not use its cameras either.
+  describe('unconfirmed or inactive account', () => {
+    afterEach(() => installEditionHooks(undefined));
+
+    const verify = () => request(app)
+      .post('/internal/auth/verify')
+      .set('X-Internal-Key', TEST_INTERNAL_KEY)
+      .send({ username: 'testuser@test.com', password: 'correctPassword1' });
+
+    it('refuses the camera login of an account whose address is not confirmed', async (ctx) => {
+      story(ctx, 'Konto opłacone przy rejestracji, ale z niepotwierdzonym adresem, nie może jeszcze działać — także kamera nie zaloguje się po FTP, dopóki właściciel nie kliknie linku.');
+      installEditionHooks({ signInRefusal: (u) => (u.emailVerified === false ? { status: 403, body: { error: 'confirm', code: 'EMAIL_NOT_VERIFIED' } } : null) });
+      mockGetUserByEmail.mockReturnValue({ ...fakeUser, emailVerified: false });
+      mockVerifyPassword.mockResolvedValue(true);
+
+      const res = await verify();
+
+      expect(res.body).toEqual({ valid: false, reason: 'email_not_verified' });
+      expect(mockResetLoginAttempts).not.toHaveBeenCalled();
+    });
+
+    it('refuses the camera login of an account an admin has not activated', async (ctx) => {
+      story(ctx, 'Darmowe konto czekające na aktywację przez admina nie może jeszcze wgrywać nagrań — FTP odmawia tak jak logowanie w aplikacji.');
+      mockGetUserByEmail.mockReturnValue({ ...fakeUser, active: false });
+      mockVerifyPassword.mockResolvedValue(true);
+
+      const res = await verify();
+
+      expect(res.body).toEqual({ valid: false, reason: 'inactive' });
+    });
+
+    it('a confirmed, active account still logs in', async (ctx) => {
+      story(ctx, 'Zwykłe konto z potwierdzonym adresem loguje kamerę jak dotąd.');
+      installEditionHooks({ signInRefusal: (u) => (u.emailVerified === false ? { status: 403, body: { error: 'confirm', code: 'EMAIL_NOT_VERIFIED' } } : null) });
+      mockGetUserByEmail.mockReturnValue({ ...fakeUser, emailVerified: true, active: true });
+      mockVerifyPassword.mockResolvedValue(true);
+
+      const res = await verify();
+
+      expect(res.body.valid).toBe(true);
     });
   });
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { story } from '../testing/story.js';
@@ -60,6 +60,7 @@ vi.mock('../middleware/auth.js', () => ({
 
 import tvDeviceRouter from './tv-device-auth.js';
 import { CONFIG } from '../config.js';
+import { installEditionHooks } from '../hooks.js';
 
 function createApp() {
   const app = express();
@@ -152,6 +153,38 @@ describe('tv device-auth router', () => {
       const res = await request(app).post('/api/v0/tv/device/approve').send({ user_code: 'K7QF3M9P' });
       expect(res.status).toBe(400);
       expect(res.body.error).toBe('invalid_or_expired');
+    });
+  });
+
+  describe("the edition's sign-in rule", () => {
+    beforeEach(() => {
+      installEditionHooks({
+        signInRefusal: (u) => (u.emailVerified === false ? { status: 403, body: { error: 'confirm', code: 'EMAIL_NOT_VERIFIED' } } : null),
+      });
+    });
+    afterEach(() => installEditionHooks(undefined));
+
+    it('refuses to pair a TV to an account the rule would not sign in', async (ctx) => {
+      story(ctx, 'Parowanie telewizora to też sposób wejścia: konto z niepotwierdzonym adresem (sesja sprzed reguły) nie zatwierdzi kodu — 403 EMAIL_NOT_VERIFIED, kod zostaje nietknięty.');
+      mockGetUserByInternalId.mockResolvedValue({ id: 'u-1', internalId: 1, emailVerified: false, active: true });
+
+      const res = await request(app).post('/api/v0/tv/device/approve').send({ user_code: 'K7QF3M9P' });
+
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe('EMAIL_NOT_VERIFIED');
+      expect(mockApproveDeviceCode).not.toHaveBeenCalled();
+    });
+
+    it('issues no tokens to a TV whose account the rule refuses by the time it polls', async (ctx) => {
+      story(ctx, 'Gdy między zatwierdzeniem a odpytaniem konto przestało spełniać regułę, telewizor dostaje expired_token zamiast tokenów.');
+      mockGetDeviceCodeByDeviceCode.mockResolvedValue({ id: 7, userId: 42, status: 'approved', expiresAt: new Date(Date.now() + 60_000) });
+      mockGetUserByInternalId.mockResolvedValue({ id: 'uuid-42', internalId: 42, active: true, emailVerified: false, tokenGeneration: 1 });
+
+      const res = await request(app).post('/api/v0/tv/device/token').send({ device_code: 'dev-xyz' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('expired_token');
+      expect(mockGenerateAccessToken).not.toHaveBeenCalled();
     });
   });
 

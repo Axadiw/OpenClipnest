@@ -116,3 +116,39 @@ export async function migrateToSchema(
     );
   }
 }
+
+/** SQLSTATE 40P01: deadlock detected. */
+const DEADLOCK = '40P01';
+
+/**
+ * Run one DDL statement, retrying when Postgres picks it as a deadlock victim.
+ *
+ * Several test files replay the migrations into their own schema of the SAME
+ * database at the same time. Schema-level DDL (DROP SCHEMA … CASCADE next to
+ * another file's CREATE TABLE with a citext column) takes locks on shared
+ * catalog rows in an order nothing controls, and on a loaded CI Postgres that
+ * surfaced as an occasional `deadlock detected`. The statement is idempotent
+ * and the victim has changed nothing, so running it again is always safe.
+ */
+export async function ddlWithDeadlockRetry(pool: Pool, sql: string, attempts = 5): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await pool.query(sql);
+      return;
+    } catch (err) {
+      if ((err as { code?: string }).code !== DEADLOCK || attempt >= attempts) throw err;
+      await new Promise((r) => setTimeout(r, 100 * attempt + Math.floor(Math.random() * 200)));
+    }
+  }
+}
+
+/** DROP + CREATE an empty scratch schema, tolerating deadlocks with sibling files. */
+export async function resetScratchSchema(pool: Pool, schema: string): Promise<void> {
+  await ddlWithDeadlockRetry(pool, `DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+  await ddlWithDeadlockRetry(pool, `CREATE SCHEMA "${schema}"`);
+}
+
+/** DROP a scratch schema, tolerating deadlocks with sibling files. */
+export async function dropScratchSchema(pool: Pool, schema: string): Promise<void> {
+  await ddlWithDeadlockRetry(pool, `DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+}

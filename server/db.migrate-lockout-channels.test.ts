@@ -13,7 +13,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Pool } from 'pg';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { migrateToSchema } from './testing/migrate-schema.js';
+import { dropScratchSchema, migrateToSchema } from './testing/migrate-schema.js';
 import { story } from './testing/story.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -33,7 +33,7 @@ describe.skipIf(!TEST_DB_URL)(`drizzle migrate ${TAG}`, () => {
   afterAll(async () => {
     if (pool) await pool.end();
     const cleanup = new Pool({ connectionString: TEST_DB_URL, max: 1 });
-    await cleanup.query(`DROP SCHEMA IF EXISTS "${SCRATCH_SCHEMA}" CASCADE`);
+    await dropScratchSchema(cleanup, SCRATCH_SCHEMA);
     await cleanup.end();
   }, 60_000);
 

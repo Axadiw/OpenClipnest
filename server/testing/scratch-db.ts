@@ -44,6 +44,8 @@ export interface ScratchDb {
 const OBJECT_IN_USE = '55006';
 // SQLSTATE 57P01: "terminating connection due to administrator command".
 const ADMIN_SHUTDOWN = '57P01';
+// SQLSTATE 42501: "must be a member of the role whose process is being terminated".
+const INSUFFICIENT_PRIVILEGE = '42501';
 
 export async function createScratchDb(opts: { max?: number } = {}): Promise<ScratchDb> {
   const provided = inject('dbTemplate');
@@ -91,7 +93,25 @@ export async function createScratchDb(opts: { max?: number } = {}): Promise<Scra
       const c = new pg.Client({ connectionString: baseUrl });
       await c.connect();
       try {
-        await c.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+        for (let attempt = 1; ; attempt++) {
+          try {
+            await c.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+            return;
+          } catch (err) {
+            // FORCE must terminate every other backend in the copy and refuses
+            // (42501) when one belongs to a role we may not signal, or (55006)
+            // when one has not gone away yet; both are short-lived. A copy that
+            // still will not drop is only a leftover in a throwaway cluster, so
+            // it must not fail a file whose tests all passed.
+            const code = (err as { code?: string }).code;
+            if (code !== INSUFFICIENT_PRIVILEGE && code !== OBJECT_IN_USE) throw err;
+            if (attempt >= 5) {
+              console.warn(`[scratch-db] could not drop ${name}: ${(err as Error).message}`);
+              return;
+            }
+            await new Promise((r) => setTimeout(r, 300 * attempt));
+          }
+        }
       } finally {
         await c.end();
       }

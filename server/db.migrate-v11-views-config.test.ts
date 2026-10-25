@@ -16,7 +16,7 @@ import { Pool } from 'pg';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
-import { migrateToSchema } from './testing/migrate-schema.js';
+import { dropScratchSchema, resetScratchSchema, migrateToSchema } from './testing/migrate-schema.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -42,13 +42,12 @@ describe.skipIf(!TEST_DB_URL)('drizzle migrate v11: user_camera_profiles.views_c
       await pool.end();
     }
     const cleanup = new Pool({ connectionString: TEST_DB_URL, max: 1 });
-    await cleanup.query(`DROP SCHEMA IF EXISTS "${SCRATCH_SCHEMA}" CASCADE`);
+    await dropScratchSchema(cleanup, SCRATCH_SCHEMA);
     await cleanup.end();
   }, 60_000);
 
   beforeEach(async () => {
-    await pool.query(`DROP SCHEMA IF EXISTS "${SCRATCH_SCHEMA}" CASCADE`);
-    await pool.query(`CREATE SCHEMA "${SCRATCH_SCHEMA}"`);
+    await resetScratchSchema(pool, SCRATCH_SCHEMA);
   });
 
   it('adds views_config column after applying all migrations', { timeout: 60_000 }, async () => {
