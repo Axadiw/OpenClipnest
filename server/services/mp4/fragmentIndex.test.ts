@@ -66,6 +66,52 @@ describe('indexFragmentedMp4 (corrupt-fragment guard)', () => {
     expect(index.fragments.length).toBe(3);
     expect(index.totalTrackDuration).toBe(27000); // 3 × 9000
   });
+
+  it('ends the walk at a trailing mfra index instead of rejecting the file', async (ctx) => {
+    story(ctx, 'Wiele plików (ffmpeg, a także nagranie pobrane z Clipnest) ma po ostatnim fragmencie blok indeksu mfra. Kiedyś indekser oczekiwał tam moof, rzucał błąd i nagranie lądowało jako nieodtwarzalne. Teraz mfra kończy przegląd: wszystkie fragmenty zostają, a nasz własny mfra i tak dokłada sidecar.');
+
+    const ftyp = makeFtyp();
+    const moov = makeMoov({
+      mvhdTimescale: 1000,
+      mvhdDuration: 0,
+      tracks: [{ id: 1, mdhdTimescale: 90000 }],
+      withMvex: true,
+      withMehd: false,
+      trexDefaults: [{ trackId: 1, defaultSampleDuration: 3000 }],
+    });
+    const frag1 = makeMoofMdat({ trackId: 1, decodeTime: 0,    sampleDurations: [3000, 3000, 3000], mdatPayloadSize: 64 });
+    const frag2 = makeMoofMdat({ trackId: 1, decodeTime: 9000, sampleDurations: [3000, 3000, 3000], mdatPayloadSize: 64 });
+    const mfra = box('mfra', Buffer.alloc(32));
+    const file = Buffer.concat([ftyp, moov, frag1, frag2, mfra]);
+    const fetcher: RangeFetcher = async (start, end) => file.slice(start, end + 1);
+
+    const index = await indexFragmentedMp4(file, file.length, fetcher);
+    expect(index.fragments.length).toBe(2);
+    expect(index.totalTrackDuration).toBe(18000);
+    expect(index.mdatSpanEnd).toBe(file.length - mfra.length);
+  });
+
+  it('still rejects an unexpected box between fragments', async (ctx) => {
+    story(ctx, 'Tylko mfra po ostatnim fragmencie jest akceptowane. Obcy blok w środku pliku albo mfra przed jakimkolwiek fragmentem dalej oznacza uszkodzony plik.');
+
+    const ftyp = makeFtyp();
+    const moov = makeMoov({
+      mvhdTimescale: 1000,
+      mvhdDuration: 0,
+      tracks: [{ id: 1, mdhdTimescale: 90000 }],
+      withMvex: true,
+      withMehd: false,
+      trexDefaults: [{ trackId: 1, defaultSampleDuration: 3000 }],
+    });
+    const frag1 = makeMoofMdat({ trackId: 1, decodeTime: 0, sampleDurations: [3000, 3000, 3000], mdatPayloadSize: 64 });
+    const junk = box('udta', Buffer.alloc(16));
+    const midFile = Buffer.concat([ftyp, moov, frag1, junk, frag1]);
+    await expect(indexFragmentedMp4(midFile, midFile.length, async (s, e) => midFile.slice(s, e + 1)))
+      .rejects.toThrow(/expected moof/);
+    const mfraFirst = Buffer.concat([ftyp, moov, box('mfra', Buffer.alloc(16)), frag1]);
+    await expect(indexFragmentedMp4(mfraFirst, mfraFirst.length, async (s, e) => mfraFirst.slice(s, e + 1)))
+      .rejects.toThrow(/expected moof/);
+  });
 });
 
 describe('indexFragmentedMp4 (allocation guards — crafted-MP4 OOM defense)', () => {

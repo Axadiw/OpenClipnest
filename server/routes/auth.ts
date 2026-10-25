@@ -21,6 +21,7 @@ import { auditLog } from '../services/audit.js';
 import { issueSessionTokens } from '../services/sessions.js';
 import { createSession, touchSession, revokeSession } from '../db/queries/sessions.js';
 import { normalizeEmail } from '../utils/normalizeEmail.js';
+import { signInRefusal } from '../hooks.js';
 
 // Core authentication: password login, token refresh and sign-out. Password
 // change, the separate FTPS credential, email-driven flows (verification,
@@ -69,10 +70,26 @@ router.post('/login', loginRateLimit, loginEmailRateLimit, async (req, res) => {
 
     // Always run bcrypt.compare to prevent timing-based user enumeration
     const valid = await verifyPassword(password, user?.passwordHash ?? DUMMY_HASH);
-    // Treat inactive accounts the same as invalid credentials to prevent user enumeration:
-    // a 403 "pending verification" response would confirm both email existence and correct password.
-    if (!user || !valid || !user.active) {
+    if (!user || !valid) {
       if (user) await recordFailedLogin(user.internalId, 'web');
+      auditLog('LOGIN_FAILURE', { email, ip: req.ip });
+      res.status(401).json({ error: 'Invalid credentials' });
+      return;
+    }
+    // The edition's own rule (Clipnest Cloud: the e-mail address must be
+    // confirmed — 403 EMAIL_NOT_VERIFIED). Only after the password was proven,
+    // so a wrong password never learns it, and before the `active` check, so
+    // an inactive, unconfirmed account is told to confirm its address first.
+    const refusal = signInRefusal(user);
+    if (refusal) {
+      auditLog('LOGIN_REFUSED', { email, ip: req.ip, code: refusal.body.code });
+      res.status(refusal.status).json(refusal.body);
+      return;
+    }
+    // Treat inactive accounts the same as invalid credentials to prevent user enumeration:
+    // a 403 "pending activation" response would confirm both email existence and correct password.
+    if (!user.active) {
+      await recordFailedLogin(user.internalId, 'web');
       auditLog('LOGIN_FAILURE', { email, ip: req.ip });
       res.status(401).json({ error: 'Invalid credentials' });
       return;
@@ -155,6 +172,17 @@ router.post('/refresh', refreshTokenRateLimit, async (req, res) => {
     const user = await getUserByInternalId(payload.userId);
     if (!user || !user.active) {
       res.status(401).json({ error: 'Account unavailable' });
+      return;
+    }
+
+    // The same edition rule as /login: a session that predates it (or an
+    // address that was un-confirmed since) cannot be kept alive.
+    // Answered as 401 here (with the same body and code): the native apps end
+    // a session only on a 401 from refresh, and would otherwise sit in a dead
+    // signed-in state instead of returning to the sign-in screen.
+    const refusal = signInRefusal(user);
+    if (refusal) {
+      res.status(401).json(refusal.body);
       return;
     }
 

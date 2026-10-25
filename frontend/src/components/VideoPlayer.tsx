@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
 import { api, ApiError } from '../api';
 import { useTranslation } from '../i18n';
 import { getFilename, type CameraEvent, type ViewId } from '../types';
@@ -325,10 +325,21 @@ export function VideoPlayer({ event, view, events, onClose, onNavigate }: Props)
     else if (e.key === '.') stepFrame(1);
   }, [currentIndex, currentView, events, onClose, onNavigate, stepFrame]);
 
-  useEffect(() => {
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
+  // Attach the document-level shortcuts in a LAYOUT effect and route them through a ref.
+  // A passive useEffect runs AFTER paint, so for a few frames the overlay is on screen but
+  // Escape / arrows do nothing — a user (or a test) pressing Escape right after opening a
+  // clip lost the key. The layout effect runs inside the commit that mounts the overlay,
+  // and the ref means a changing handler identity (it depends on the current clip/view)
+  // never detaches the listener, not even for a moment.
+  const handleKeyDownRef = useRef(handleKeyDown);
+  useLayoutEffect(() => {
+    handleKeyDownRef.current = handleKeyDown;
   }, [handleKeyDown]);
+  useLayoutEffect(() => {
+    const onKey = (e: KeyboardEvent) => handleKeyDownRef.current(e);
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
 
   // Track fullscreen so the on-video zoom controls only auto-hide there. The
   // bar tracks the same thing internally; we mirror it here to gate the zoom

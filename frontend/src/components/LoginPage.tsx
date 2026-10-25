@@ -33,13 +33,15 @@ export function LoginPage() {
   const { t } = useTranslation();
   const { login } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { OAuthButtons, BanNotice, EmailStageLinks, passkey } = edition.login;
+  const { OAuthButtons, BanNotice, EmailStageLinks, passkey, EmailNotVerifiedAction, verifiedDestination } = edition.login;
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(getRememberMe);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
   const [ban, setBan] = useState<BanInfo | null>(null);
+  /** The last sign-in was refused because the address is not confirmed yet. */
+  const [unverified, setUnverified] = useState(false);
   const [loading, setLoading] = useState(false);
   const [stage, setStage] = useState<Stage>('email');
   const [passkeyChallenge, setPasskeyChallenge] = useState<PasskeyChallenge | null>(null);
@@ -56,14 +58,18 @@ export function LoginPage() {
     if (verified === '1') setInfo(t(searchParams.get('ready') === '1' ? 'login.verifiedReady' : 'login.verifiedSuccess'));
     else if (verified === '0') setError(t('login.verifiedFailure'));
     if (verified !== null) {
+      // The edition may name where to go once signed in (RequireAnonymous
+      // follows `state.from` after the sign-in) — e.g. the plan to pay for.
+      const dest = verified === '1' ? verifiedDestination?.(searchParams) ?? null : null;
       setSearchParams(prev => {
         const next = new URLSearchParams(prev);
         next.delete('verified');
         next.delete('ready');
+        next.delete('plan');
         return next;
-      }, { replace: true });
+      }, { replace: true, state: dest ? { from: dest } : undefined });
     }
-  }, [t, searchParams, setSearchParams]);
+  }, [t, searchParams, setSearchParams, verifiedDestination]);
 
   const handleBanError = (err: ApiError) => {
     const body = err.body as { until?: string | null; reason?: string | null; indefinite?: boolean } | undefined;
@@ -114,6 +120,7 @@ export function LoginPage() {
     e.preventDefault();
     setError('');
     setBan(null);
+    setUnverified(false);
     setLoading(true);
     try {
       const result = await api.login(email, password);
@@ -125,6 +132,7 @@ export function LoginPage() {
         setError(t('login.rateLimited'));
       }
       else if (err instanceof ApiError && err.status === 403 && err.body?.banned) handleBanError(err);
+      else if (err instanceof ApiError && err.status === 403 && err.body?.code === 'EMAIL_NOT_VERIFIED') setUnverified(true);
       else if (err instanceof ApiError && err.status === 400 && (err.body as { passkeyRequired?: boolean })?.passkeyRequired) {
         // Account flipped to passkey-only between begin and submit — restart.
         setStage('email');
@@ -140,6 +148,7 @@ export function LoginPage() {
     setStage('email');
     setError('');
     setBan(null);
+    setUnverified(false);
     setPasskeyChallenge(null);
     setPassword('');
   };
@@ -174,6 +183,12 @@ export function LoginPage() {
         {ban && BanNotice && <BanNotice until={ban.until} reason={ban.reason} indefinite={ban.indefinite} />}
         {info && <div className="info" style={{ color: 'var(--accent, #6EE7B7)', marginBottom: '8px', textAlign: 'center' }}>{info}</div>}
         {displayError && <div className="error">{displayError}</div>}
+        {unverified && !displayError && (
+          <div className="info" role="status" data-testid="login-email-not-verified" style={{ marginBottom: '8px', textAlign: 'center' }}>
+            <p style={{ margin: '0 0 8px' }}>{t('login.emailNotVerified')}</p>
+            {EmailNotVerifiedAction && <EmailNotVerifiedAction email={email} />}
+          </div>
+        )}
 
         {stage === 'email' && (
           <>
@@ -229,6 +244,7 @@ export function LoginPage() {
             onError={setError}
             onRateLimit={rlStart}
             onBan={setBan}
+            onEmailNotVerified={() => setUnverified(true)}
             onUseBackup={() => setStage('backup')}
             onBack={restart}
           />

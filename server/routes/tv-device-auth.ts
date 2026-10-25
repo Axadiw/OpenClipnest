@@ -7,6 +7,7 @@ import {
 import { requireAuth } from '../middleware/auth.js';
 import { requireOwner } from '../middleware/editionGuards.js';
 import { issueSessionTokens } from '../services/sessions.js';
+import { signInRefusal } from '../hooks.js';
 import { getUserByInternalId } from '../db/queries/users.js';
 import {
   generateUserCode,
@@ -69,6 +70,14 @@ router.post('/approve', requireAuth, requireOwner, async (req, res) => {
       res.status(400).json({ error: 'invalid_code' });
       return;
     }
+    // The edition's sign-in rule binds pairing too: a TV must not get a
+    // session for an account that could not sign in itself.
+    const owner = await getUserByInternalId(req.user!.userId);
+    const refusal = owner ? signInRefusal(owner) : null;
+    if (refusal) {
+      res.status(refusal.status).json(refusal.body);
+      return;
+    }
     const approved = await approveDeviceCode(userCode, req.user!.userId);
     if (!approved) {
       res.status(400).json({ error: 'invalid_or_expired' });
@@ -111,7 +120,8 @@ router.post('/token', deviceCodePollRateLimit, async (req, res) => {
 
     // status === 'approved'
     const user = row.userId != null ? await getUserByInternalId(row.userId) : undefined;
-    if (!user || !user.active) {
+    // Same gate as at approval: the account may have changed in between.
+    if (!user || !user.active || signInRefusal(user)) {
       res.status(400).json({ error: 'expired_token' });
       return;
     }

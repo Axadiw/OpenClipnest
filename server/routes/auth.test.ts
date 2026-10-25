@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { story } from '../testing/story.js';
@@ -124,6 +124,7 @@ vi.mock('../services/audit.js', () => ({
 }));
 
 import authRouter from './auth.js';
+import { installEditionHooks } from '../hooks.js';
 
 function createApp() {
   const app = express();
@@ -212,6 +213,95 @@ describe('auth router', () => {
       expect(res.status).toBe(401);
       expect(mockRecordFailedLogin).toHaveBeenCalledWith(42, 'web');
       expect(mockResetLoginAttempts).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("the edition's sign-in rule", () => {
+    // A stand-in rule (the shared tree knows no edition): refuse an
+    // unconfirmed address, the way the hosted edition does.
+    beforeEach(() => {
+      installEditionHooks({
+        signInRefusal: (u) => (u.emailVerified === false ? { status: 403, body: { error: 'confirm', code: 'EMAIL_NOT_VERIFIED' } } : null),
+      });
+      mockIsUserBanned.mockResolvedValue({ banned: false });
+      mockIsUserLocked.mockResolvedValue({ locked: false });
+      mockGenerateAccessToken.mockReturnValue('access-jwt');
+      mockGenerateRefreshToken.mockReturnValue('refresh-jwt');
+    });
+    afterEach(() => installEditionHooks(undefined));
+
+    const unconfirmed = {
+      id: 'uuid-1', internalId: 42, email: 'alice@test.com', isAdmin: false, active: true,
+      emailVerified: false, passwordHash: 'hash', tokenGeneration: 3,
+    };
+
+    it('refuses the right password on an unconfirmed address with the rule answer, issuing no tokens', async (ctx) => {
+      story(ctx, 'Gdy edycja ma własną regułę logowania (np. adres musi być potwierdzony), poprawne hasło na niepotwierdzonym adresie dostaje 403 EMAIL_NOT_VERIFIED zamiast tokenów i nie otwiera sesji.');
+      mockGetUserByEmail.mockResolvedValue(unconfirmed);
+      mockVerifyPassword.mockResolvedValue(true);
+
+      const res = await request(app).post('/api/v0/auth/login').send({ email: 'alice@test.com', password: 'right' });
+
+      expect(res.status).toBe(403);
+      expect(res.body).toEqual({ error: 'confirm', code: 'EMAIL_NOT_VERIFIED' });
+      expect(mockCreateSession).not.toHaveBeenCalled();
+      expect(mockGenerateAccessToken).not.toHaveBeenCalled();
+    });
+
+    it('keeps the generic 401 for a wrong password, so the rule reveals nothing', async (ctx) => {
+      story(ctx, 'Złe hasło na niepotwierdzonym adresie dostaje zwykłe 401 „Invalid credentials” — bez hasła nie da się sprawdzić, czy konto istnieje ani czy jest potwierdzone.');
+      mockGetUserByEmail.mockResolvedValue(unconfirmed);
+      mockVerifyPassword.mockResolvedValue(false);
+
+      const res = await request(app).post('/api/v0/auth/login').send({ email: 'alice@test.com', password: 'wrong' });
+
+      expect(res.status).toBe(401);
+      expect(res.body).toEqual({ error: 'Invalid credentials' });
+    });
+
+    it('tells an inactive, unconfirmed account to confirm its address first', async (ctx) => {
+      story(ctx, 'Konto nieaktywne (czeka na admina) i niepotwierdzone, z poprawnym hasłem, najpierw słyszy „potwierdź adres” — reguła edycji idzie przed sprawdzeniem aktywności.');
+      mockGetUserByEmail.mockResolvedValue({ ...unconfirmed, active: false });
+      mockVerifyPassword.mockResolvedValue(true);
+
+      const res = await request(app).post('/api/v0/auth/login').send({ email: 'alice@test.com', password: 'right' });
+
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe('EMAIL_NOT_VERIFIED');
+    });
+
+    it('still answers an inactive, confirmed account with the generic 401', async (ctx) => {
+      story(ctx, 'Potwierdzone, ale jeszcze nieaktywne konto dostaje jak dotąd zwykłe 401 — reguła niczego tu nie zmienia.');
+      mockGetUserByEmail.mockResolvedValue({ ...unconfirmed, active: false, emailVerified: true });
+      mockVerifyPassword.mockResolvedValue(true);
+
+      const res = await request(app).post('/api/v0/auth/login').send({ email: 'alice@test.com', password: 'right' });
+
+      expect(res.status).toBe(401);
+    });
+
+    it('refuses to refresh a session of an unconfirmed account', async (ctx) => {
+      story(ctx, 'Sesja sprzed reguły (albo adres, który przestał być potwierdzony) nie odnowi się refreshem — 401 z kodem EMAIL_NOT_VERIFIED, bez nowych tokenów. 401, a nie 403: aplikacje kończą sesję tylko na 401 z refresh i wracają do ekranu logowania, zamiast utknąć w martwej sesji.');
+      mockVerifyToken.mockReturnValue({ userId: 42, tokenGen: 3, kind: 'refresh' });
+      mockGetUserByInternalId.mockResolvedValue(unconfirmed);
+      mockGetTokenGeneration.mockResolvedValue(3);
+
+      const res = await request(app).post('/api/v0/auth/refresh').send({ refreshToken: 'jwt' });
+
+      expect(res.status).toBe(401);
+      expect(res.body.code).toBe('EMAIL_NOT_VERIFIED');
+      expect(mockGenerateAccessToken).not.toHaveBeenCalled();
+    });
+
+    it('signs a confirmed account in as before', async (ctx) => {
+      story(ctx, 'Potwierdzone konto loguje się jak dotąd — reguła przepuszcza.');
+      mockGetUserByEmail.mockResolvedValue({ ...unconfirmed, emailVerified: true });
+      mockVerifyPassword.mockResolvedValue(true);
+
+      const res = await request(app).post('/api/v0/auth/login').send({ email: 'alice@test.com', password: 'right' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.token).toBe('access-jwt');
     });
   });
 

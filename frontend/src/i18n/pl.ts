@@ -18,6 +18,7 @@ export const pl: Record<string, string> = {
   'login.backToEmail': 'Inny email',
   'login.passkeyRequired': 'Zaloguj si\u0119 przez passkey.',
   'login.verifiedFailure': 'Link potwierdzaj\u0105cy jest nieprawid\u0142owy lub wygas\u0142.',
+  'login.emailNotVerified': 'Potwierdź adres e-mail — wysłaliśmy Ci link.',
   'login.pendingActivation': 'Konto utworzone \u2014 czeka na aktywacj\u0119 przez administratora.',
   'tv.title': 'Połącz telewizor',
   'tv.subtitle': 'Wpisz kod wyświetlony na Apple TV, aby go zalogować.',
