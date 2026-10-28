@@ -1,0 +1,158 @@
+name: Release images
+
+# Publishes the three images of a release to GitHub Packages (ghcr.io) and
+# Docker Hub when a release tag `vX.Y.Z` is pushed. Compose still builds from
+# the tree by default (`docker compose up -d --build`); these are for people
+# who would rather pull.
+#
+# Needs two repository secrets: DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (an
+# access token with Read & Write). GitHub Packages uses the built-in token.
+#
+# Each architecture is built on a native runner (no emulation: the FTPS
+# server is Rust and would take an hour under QEMU) and the per-architecture
+# images are then merged into one multi-arch tag.
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to (re)publish, e.g. v1.0.1'
+        required: true
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      # The web app's menu and /api/v0/config report x-version, so a tag whose
+      # compose file says something else would publish mislabeled images.
+      - name: Tag matches x-version
+        run: |
+          v=$(sed -n 's/^x-version: &version "\(.*\)"$/\1/p' docker-compose.yml)
+          if [ "$v" != "$TAG" ]; then
+            echo "::error::Tag $TAG, but docker-compose.yml has x-version $v"
+            exit 1
+          fi
+
+  build:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [server, frontend, ftps]
+        platform: [linux/amd64, linux/arm64]
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      # Push by digest to both registries; the merge job names the tags.
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/${{ matrix.image }}.Dockerfile
+          platforms: ${{ matrix.platform }}
+          build-args: VERSION=${{ env.TAG }}
+          outputs: type=image,name=ghcr.io/axadiw/openclipnest-${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ matrix.platform }}
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.image }}-${{ strategy.job-index }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        image: [server, frontend, ftps]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digests-${{ matrix.image }}-*
+          path: /tmp/digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      # vX.Y.Z, X.Y.Z, X.Y and latest on both registries.
+      - name: Tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ghcr.io/axadiw/openclipnest-${{ matrix.image }}
+            docker.io/axadiw/openclipnest-${{ matrix.image }}
+          tags: |
+            type=raw,value=${{ env.TAG }}
+            type=semver,pattern={{version}},value=${{ env.TAG }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.TAG }}
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/Axadiw/OpenClipnest
+            org.opencontainers.image.licenses=PolyForm-Noncommercial-1.0.0
+      - name: Merge the architectures into one tag
+        working-directory: /tmp/digests
+        run: |
+          # One manifest list per registry, from the digests pushed to ghcr:
+          # Docker Hub gets the same blobs copied by buildx.
+          for ref in $(jq -cr '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON"); do
+            docker buildx imagetools create -t "$ref" \
+              $(printf 'ghcr.io/axadiw/openclipnest-${{ matrix.image }}@sha256:%s ' *)
+          done
+      - name: Check the result
+        run: |
+          docker buildx imagetools inspect "ghcr.io/axadiw/openclipnest-${{ matrix.image }}:${TAG}"
+          docker buildx imagetools inspect "docker.io/axadiw/openclipnest-${{ matrix.image }}:${TAG}"
