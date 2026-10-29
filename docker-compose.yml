@@ -15,7 +15,7 @@
 
 # The release this tree is: shown in the web app's menu and reported by
 # /api/v0/config. The commit that is tagged as a release sets it.
-x-version: &version "v1.0.0"
+x-version: &version "v1.0.3"
 
 x-server: &server
   build:
