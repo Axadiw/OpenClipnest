@@ -9,17 +9,17 @@
     "test": "STORY_REPORT_OUTPUT=../test-results/vitest-frontend.json vitest run"
   },
   "dependencies": {
-    "@sentry/react": "^10.76.2",
+    "@sentry/react": "^10.78.0",
     "@simplewebauthn/browser": "^13.3.0",
-    "@tiptap/extension-link": "^3.32.0",
-    "@tiptap/react": "^3.32.0",
-    "@tiptap/starter-kit": "^3.32.0",
+    "@tiptap/extension-link": "^3.32.1",
+    "@tiptap/react": "^3.32.1",
+    "@tiptap/starter-kit": "^3.32.1",
     "date-fns": "^4.4.0",
     "dompurify": "^3.4.17",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "react-markdown": "^10.1.0",
-    "react-router-dom": "^7.18.4",
+    "react-router-dom": "^7.18.5",
     "react-zoom-pan-pinch": "^4.2.0",
     "remark-gfm": "^4.0.1"
   },
@@ -32,13 +32,13 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
-    "eslint": "^10.12.0",
+    "eslint": "^10.13.0",
     "eslint-plugin-react-hooks": "7.1.1",
     "happy-dom": "^20.14.6",
     "jsdom": "^29.1.1",
     "typescript": "^6.0.2",
-    "typescript-eslint": "^8.71.2",
-    "vite": "^8.3.4",
-    "vitest": "^4.1.11"
+    "typescript-eslint": "^8.72.1",
+    "vite": "^8.3.5",
+    "vitest": "^4.1.12"
   }
 }
