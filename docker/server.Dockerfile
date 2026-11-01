@@ -4,7 +4,7 @@
 # Pinned, Alpine release included: ffmpeg comes from that release's own
 # repositories, and Alpine 3.24 is the first to carry the version the
 # thumbnail pipeline is tested against. Dependabot proposes updates.
-FROM node:26.12.0-alpine3.24 AS base
+FROM node:26.13.0-alpine3.24 AS base
 WORKDIR /app
 RUN apk upgrade --no-cache
 # ffmpeg decodes thumbnails. Not from Alpine's edge repository: edge's ffmpeg
