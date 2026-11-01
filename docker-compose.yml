@@ -274,7 +274,7 @@ services:
   # Runs with your own object storage too: the FTP server needs its
   # certificate either way.
   init-certs:
-    image: alpine:3.24.2
+    image: alpine:3.24.3
     environment:
       FTP_HOST: ${FTP_HOST:?FTP_HOST is not set - copy .env.example to .env and fill it in}
     volumes:
